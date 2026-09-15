@@ -556,6 +556,142 @@ async function sortSheetByFinalScore(spreadsheetId, sheetName, colMap) {
   }
 }
 
+/**
+ * Fetch live history batches from Master Database Spreadsheet.
+ * Automatically filters out any deleted tabs or deleted rows!
+ */
+async function fetchMasterHistory(masterSheetUrlOrId) {
+  try {
+    const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
+    if (!spreadsheetId) return [];
+
+    const sheets = getGoogleSheetsClient();
+
+    // 1. Get spreadsheet metadata to find existing sheet titles
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const existingSheetTitles = meta.data.sheets.map(s => s.properties.title);
+
+    const indexSheetName = 'Master_Index';
+    if (!existingSheetTitles.includes(indexSheetName)) {
+      return [];
+    }
+
+    // 2. Read Master_Index values
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${indexSheetName}!A1:F100`
+    });
+
+    const rows = res.data.values;
+    if (!rows || rows.length <= 1) return [];
+
+    const historyRecords = [];
+
+    // Loop through rows skipping header (row 0)
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+
+      const operationName = row[0] ? row[0].trim() : `Batch #${i}`;
+      const dateFormatted = row[1] ? row[1].trim() : '';
+      const totalCandidates = parseInt(row[2]) || 0;
+      const goodToGoCount = parseInt(row[3]) || 0;
+      const waitingListCount = parseInt(row[4]) || 0;
+
+      // Extract tab name from link or cell
+      let tabName = row[5] ? row[5].trim() : '';
+      if (tabName.includes('=')) {
+        const match = tabName.match(/,\s*["']([^"']+)["']\)/);
+        if (match) tabName = match[1];
+      }
+
+      // CHECK: Does this tab actually exist in Google Sheet?
+      if (tabName && !existingSheetTitles.includes(tabName)) {
+        console.log(`Skipping deleted Google Sheet tab: ${tabName}`);
+        continue; // TAB WAS DELETED IN GOOGLE SHEET! SKIP IT!
+      }
+
+      let candidates = [];
+      if (tabName && existingSheetTitles.includes(tabName)) {
+        try {
+          const tabRes = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: `${tabName}!A1:Z1000`
+          });
+
+          const tabRows = tabRes.data.values;
+          if (tabRows && tabRows.length > 1) {
+            const tabHeaders = tabRows[0].map(h => h ? h.trim() : '');
+            const nameIdx = tabHeaders.findIndex(h => /name|candidate/i.test(h));
+            const emailIdx = tabHeaders.findIndex(h => /email|mail/i.test(h));
+            const phoneIdx = tabHeaders.findIndex(h => /phone|mobile/i.test(h));
+            const resumeIdx = tabHeaders.findIndex(h => /resume|cv|link/i.test(h));
+            const matchIdx = tabHeaders.findIndex(h => /match/i.test(h));
+            const atsIdx = tabHeaders.findIndex(h => /ats/i.test(h));
+            const finalIdx = tabHeaders.findIndex(h => /final/i.test(h));
+            const catIdx = tabHeaders.findIndex(h => /category/i.test(h));
+            const critIdx = tabHeaders.findIndex(h => /critical/i.test(h));
+            const feedIdx = tabHeaders.findIndex(h => /feedback/i.test(h));
+
+            for (let r = 1; r < tabRows.length; r++) {
+              const tr = tabRows[r];
+              if (!tr || tr.length === 0) continue;
+
+              const name = nameIdx !== -1 && tr[nameIdx] ? tr[nameIdx] : `Candidate #${r}`;
+              const email = emailIdx !== -1 && tr[emailIdx] ? tr[emailIdx] : '';
+              const phone = phoneIdx !== -1 && tr[phoneIdx] ? tr[phoneIdx] : 'N/A';
+              const resumeLink = resumeIdx !== -1 && tr[resumeIdx] ? tr[resumeIdx] : '';
+              const matchScore = matchIdx !== -1 ? parseInt(tr[matchIdx]) || 0 : 0;
+              const atsScore = atsIdx !== -1 ? parseInt(tr[atsIdx]) || 0 : 0;
+              const finalScore = finalIdx !== -1 ? parseInt(tr[finalIdx]) || 0 : 0;
+              const category = catIdx !== -1 && tr[catIdx] ? tr[catIdx] : '';
+              const criticalFlag = critIdx !== -1 && tr[critIdx] ? /missing/i.test(tr[critIdx]) : false;
+              const feedback = feedIdx !== -1 && tr[feedIdx] ? tr[feedIdx] : '';
+
+              candidates.push({
+                name,
+                email,
+                phone,
+                resumeLink,
+                matchScore,
+                atsScore,
+                finalScore,
+                category,
+                criticalFlag,
+                feedback,
+                atsDetails: { warnings: [] },
+                matchingResults: { mustHaveResults: [], niceToHaveResults: [], criticalMissing: [] }
+              });
+            }
+          }
+        } catch (e) {
+          console.error(`Error loading candidates for tab ${tabName}:`, e.message);
+        }
+      }
+
+      const notMatchingCount = Math.max(0, (candidates.length || totalCandidates) - (goodToGoCount + waitingListCount));
+
+      historyRecords.push({
+        id: `gs_${i}_${tabName || operationName}`,
+        operationName,
+        timestamp: new Date().toISOString(),
+        dateFormatted,
+        studentSheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+        totalCandidates: candidates.length || totalCandidates,
+        goodToGoCount: candidates.length ? candidates.filter(c => c.finalScore >= 90).length : goodToGoCount,
+        waitingListCount: candidates.length ? candidates.filter(c => c.finalScore >= 70 && c.finalScore < 90).length : waitingListCount,
+        notMatchingCount: candidates.length ? candidates.filter(c => c.finalScore < 70).length : notMatchingCount,
+        candidates
+      });
+    }
+
+    return historyRecords;
+  } catch (err) {
+    console.error('Failed to fetch master history from Google Sheets:', err.message);
+    return [];
+  }
+}
+
 module.exports = {
   extractSpreadsheetId,
   getSheetData,
@@ -563,5 +699,6 @@ module.exports = {
   batchUpdateCandidateResults,
   logOperationToMasterSheet,
   writeBatchToMasterDatabase,
-  sortSheetByFinalScore
+  sortSheetByFinalScore,
+  fetchMasterHistory
 };

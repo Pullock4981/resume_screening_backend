@@ -1,4 +1,5 @@
 const { processScreening } = require('../services/screeningService');
+const { fetchMasterHistory } = require('../config/googleSheets');
 
 // Global SSE clients list
 let sseClients = [];
@@ -66,7 +67,19 @@ const handleSSEProgress = (req, res) => {
   });
 };
 
+const handleGetHistory = async (req, res) => {
+  try {
+    const masterSheetUrl = req.query.masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL;
+    const history = await fetchMasterHistory(masterSheetUrl);
+    return res.status(200).json({ success: true, history });
+  } catch (err) {
+    console.error('Fetch history error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
 module.exports = {
   handleScreening,
-  handleSSEProgress
+  handleSSEProgress,
+  handleGetHistory
 };
