@@ -11,18 +11,25 @@ function sendSSEEvent(data) {
 }
 
 const handleScreening = async (req, res) => {
+  // Set headers for chunked streaming response (NDJSON)
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
   try {
     const { sheetUrl, masterSheetUrl, jdText, mustHave, niceToHave, minExperience, operationName } = req.body;
 
     if (!sheetUrl) {
-      return res.status(400).json({ error: 'Candidate Applicant Google Sheet URL is required.' });
+      res.write(JSON.stringify({ status: 'error', error: 'Candidate Applicant Google Sheet URL is required.' }) + '\n');
+      return res.end();
     }
 
     if (!jdText) {
-      return res.status(400).json({ error: 'Job Description text is required.' });
+      res.write(JSON.stringify({ status: 'error', error: 'Job Description text is required.' }) + '\n');
+      return res.end();
     }
 
-    // Start screening asynchronously or synchronously
+    // Process screening with real-time stream callback
     const outcome = await processScreening(
       {
         sheetUrl,
@@ -34,21 +41,18 @@ const handleScreening = async (req, res) => {
         operationName: operationName || ''
       },
       (progressData) => {
-        sendSSEEvent(progressData);
+        // Stream progress chunk directly to client on the same HTTP response
+        res.write(JSON.stringify(progressData) + '\n');
       }
     );
 
-    sendSSEEvent({ status: 'completed', total: outcome.total });
-
-    return res.status(200).json({
-      success: true,
-      message: 'Screening process completed successfully.',
-      data: outcome
-    });
+    // Stream final completion event
+    res.write(JSON.stringify({ status: 'completed', data: outcome }) + '\n');
+    res.end();
   } catch (error) {
     console.error('Screening Error:', error);
-    sendSSEEvent({ status: 'error', error: error.message });
-    return res.status(500).json({ error: error.message });
+    res.write(JSON.stringify({ status: 'error', error: error.message }) + '\n');
+    res.end();
   }
 };
 
