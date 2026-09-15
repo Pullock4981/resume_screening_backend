@@ -331,6 +331,7 @@ async function logOperationToMasterSheet(spreadsheetId, operationName, sheetName
       tabLinkCell = `=HYPERLINK("${tabUrl}", "${sheetName}")`;
     }
 
+    const opTitle = (operationName || sheetName).trim();
     const newRow = [
       opTitle,
       timeFormatted,
