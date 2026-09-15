@@ -167,6 +167,7 @@ async function getSheetData(sheetUrlOrId) {
     colMap[h] = idx;
   });
 
+  const seenKeys = new Set();
   const candidates = [];
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
@@ -175,6 +176,17 @@ async function getSheetData(sheetUrlOrId) {
     const email = emailIdx !== -1 && row[emailIdx] ? row[emailIdx].trim() : '';
     const phone = phoneIdx !== -1 && row[phoneIdx] ? row[phoneIdx].trim() : '';
     const resumeLink = resumeIdx !== -1 && row[resumeIdx] ? row[resumeIdx].trim() : '';
+
+    // Ignore completely empty rows where there is no resume link or email
+    if (!resumeLink && !email) continue;
+
+    // Deduplication key (lowercase email or resume link)
+    const dedupKey = (email ? email : resumeLink).toLowerCase().trim();
+    if (seenKeys.has(dedupKey)) {
+      console.log(`Skipping duplicate candidate row ${i + 1}: ${dedupKey}`);
+      continue;
+    }
+    seenKeys.add(dedupKey);
 
     // Derive name if missing
     let name = nameIdx !== -1 && row[nameIdx] ? row[nameIdx].trim() : '';
@@ -185,9 +197,6 @@ async function getSheetData(sheetUrlOrId) {
         name = `Candidate #${i}`;
       }
     }
-
-    // Ignore completely empty rows where there is no resume link or email
-    if (!resumeLink && !email) continue;
 
     candidates.push({
       rowIndex: i + 1, // 1-based index for Google Sheets row
