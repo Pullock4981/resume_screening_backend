@@ -76,6 +76,17 @@ function getGoogleSheetsClient() {
     }
   }
 
+  // Fallback to built-in serviceAccountData module
+  if (!email || !privateKey) {
+    try {
+      const sa = require('./serviceAccountData');
+      if (sa && sa.client_email && sa.private_key) {
+        email = sa.client_email;
+        privateKey = sa.private_key;
+      }
+    } catch (err) {}
+  }
+
   // 2. Read from .env file directly if available to reflect latest updates without server restart
   if (!email || !privateKey) {
     const envPath = path.join(__dirname, '../.env');

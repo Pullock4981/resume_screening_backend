@@ -4,10 +4,6 @@ node_modules/
 # Environment and sensitive keys
 .env
 .env.local
-service_account.json
-credentials.json
-*.json.key
-*.pem
 
 # Logs and Scratch
 *.log
