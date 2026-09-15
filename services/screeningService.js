@@ -1,4 +1,4 @@
-const { getSheetData, updateCandidateResult, logOperationToMasterSheet, writeBatchToMasterDatabase, sortSheetByFinalScore, extractSpreadsheetId } = require('../config/googleSheets');
+const { getSheetData, updateCandidateResult, batchUpdateCandidateResults, logOperationToMasterSheet, writeBatchToMasterDatabase, sortSheetByFinalScore, extractSpreadsheetId } = require('../config/googleSheets');
 const { fetchResumeText } = require('./resumeDownloader');
 const { evaluateATS } = require('../engine/atsChecker');
 const { extractSkillsFromJD, matchResumeToRequirements } = require('../engine/jdMatcher');
@@ -20,6 +20,7 @@ async function processScreening({ sheetUrl, masterSheetUrl, jdText, mustHave = [
 
   const total = candidates.length;
   const results = [];
+  const updateItems = [];
 
   // Notify initial progress
   if (onProgress) {
@@ -31,94 +32,102 @@ async function processScreening({ sheetUrl, masterSheetUrl, jdText, mustHave = [
     });
   }
 
-  // Step 3: Process Candidate by Candidate (Sequential Worker Loop)
-  for (let i = 0; i < candidates.length; i++) {
-    const candidate = candidates[i];
-    let resumeText = '';
-    let fetchError = null;
+  // Step 3: Fast Concurrent Processing (5 Candidates at once)
+  const chunkSize = 5;
+  for (let i = 0; i < candidates.length; i += chunkSize) {
+    const chunk = candidates.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(
+      chunk.map(async (candidate) => {
+        let resumeText = '';
+        let fetchError = null;
 
-    try {
-      if (candidate.resumeLink) {
-        resumeText = await fetchResumeText(candidate.resumeLink);
-      } else {
-        fetchError = 'Resume link was missing in sheet.';
+        try {
+          if (candidate.resumeLink) {
+            resumeText = await fetchResumeText(candidate.resumeLink);
+          } else {
+            fetchError = 'Resume link was missing in sheet.';
+          }
+        } catch (err) {
+          fetchError = err.message;
+        }
+
+        let resultItem = null;
+
+        if (fetchError) {
+          resultItem = {
+            name: candidate.name,
+            email: candidate.email,
+            phone: candidate.phone,
+            resumeLink: candidate.resumeLink,
+            matchScore: 0,
+            atsScore: 0,
+            finalScore: 0,
+            category: 'Critical Mismatch (<30%)',
+            criticalFlag: true,
+            feedback: `Error: ${fetchError}`,
+            atsDetails: { warnings: [fetchError] },
+            matchingResults: { mustHaveResults: [], niceToHaveResults: [], criticalMissing: ['Resume Parsing Failed'] }
+          };
+        } else {
+          // 1. Evaluate ATS
+          const atsResults = evaluateATS(resumeText);
+
+          // 2. Match JD Requirements & Experience
+          const matchingResults = matchResumeToRequirements(resumeText, mustHaveSkills, niceToHaveSkills, targetMinExp);
+
+          // 3. Calculate Math Score
+          const scoreDetails = calculateScore(matchingResults, atsResults);
+
+          // 4. Generate Feedback Text
+          const feedbackText = generateFeedback(candidate.name, scoreDetails, matchingResults, atsResults);
+
+          resultItem = {
+            name: candidate.name,
+            email: candidate.email,
+            phone: candidate.phone,
+            resumeLink: candidate.resumeLink,
+            matchScore: scoreDetails.matchScore,
+            atsScore: scoreDetails.atsScore,
+            finalScore: scoreDetails.finalScore,
+            category: scoreDetails.category,
+            criticalFlag: scoreDetails.criticalFlag,
+            feedback: feedbackText,
+            atsDetails: atsResults,
+            matchingResults
+          };
+        }
+
+        return { candidate, resultItem };
+      })
+    );
+
+    chunkResults.forEach(({ candidate, resultItem }, chunkIdx) => {
+      results.push(resultItem);
+      updateItems.push({ rowIndex: candidate.rowIndex, result: resultItem });
+
+      if (onProgress) {
+        onProgress({
+          completed: i + chunkIdx + 1,
+          total,
+          currentCandidate: candidate.name,
+          result: resultItem,
+          status: 'processing'
+        });
       }
-    } catch (err) {
-      fetchError = err.message;
-    }
-
-    let resultItem = null;
-
-    if (fetchError) {
-      // Create Error Result Entry so batch does not break!
-      resultItem = {
-        name: candidate.name,
-        email: candidate.email,
-        phone: candidate.phone,
-        resumeLink: candidate.resumeLink,
-        matchScore: 0,
-        atsScore: 0,
-        finalScore: 0,
-        category: 'Critical Mismatch (<30%)',
-        criticalFlag: true,
-        feedback: `Error: ${fetchError}`,
-        atsDetails: { warnings: [fetchError] },
-        matchingResults: { mustHaveResults: [], niceToHaveResults: [], criticalMissing: ['Resume Parsing Failed'] }
-      };
-    } else {
-      // 1. Evaluate ATS
-      const atsResults = evaluateATS(resumeText);
-
-      // 2. Match JD Requirements & Experience
-      const matchingResults = matchResumeToRequirements(resumeText, mustHaveSkills, niceToHaveSkills, targetMinExp);
-
-      // 3. Calculate Math Score
-      const scoreDetails = calculateScore(matchingResults, atsResults);
-
-      // 4. Generate Feedback Text
-      const feedbackText = generateFeedback(candidate.name, scoreDetails, matchingResults, atsResults);
-
-      resultItem = {
-        name: candidate.name,
-        email: candidate.email,
-        phone: candidate.phone,
-        resumeLink: candidate.resumeLink,
-        matchScore: scoreDetails.matchScore,
-        atsScore: scoreDetails.atsScore,
-        finalScore: scoreDetails.finalScore,
-        category: scoreDetails.category,
-        criticalFlag: scoreDetails.criticalFlag,
-        feedback: feedbackText,
-        atsDetails: atsResults,
-        matchingResults
-      };
-    }
-
-    results.push(resultItem);
-
-    // Step 4: Write Result Back to Candidate Google Sheet
-    try {
-      await updateCandidateResult(spreadsheetId, sheetName, colMap, candidate.rowIndex, resultItem);
-    } catch (writeErr) {
-      console.error(`Failed to update Google Sheet row ${candidate.rowIndex}:`, writeErr.message);
-    }
-
-    // Step 5: Notify Progress
-    if (onProgress) {
-      onProgress({
-        completed: i + 1,
-        total,
-        currentCandidate: candidate.name,
-        result: resultItem,
-        status: 'processing'
-      });
-    }
+    });
   }
 
-  // Step 6: Automatically sort candidate sheet rows by Final Score (%) in DESCENDING order!
+  // Step 4: Fast Bulk Update to Candidate Google Sheet in ONE single API call!
+  try {
+    await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, updateItems);
+  } catch (writeErr) {
+    console.error('Failed to batch update Google Sheet:', writeErr.message);
+  }
+
+  // Step 5: Automatically sort candidate sheet rows by Final Score (%) in DESCENDING order!
   await sortSheetByFinalScore(spreadsheetId, sheetName, colMap);
 
-  // Step 7: Always log operation to candidate sheet if masterSheetUrl is same or missing
+  // Step 6: Always log operation to candidate sheet if masterSheetUrl is same or missing
   const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || sheetUrl;
   const isDifferentMaster = extractSpreadsheetId(targetMasterUrl) !== spreadsheetId;
 

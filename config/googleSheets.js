@@ -253,6 +253,64 @@ async function updateCandidateResult(spreadsheetId, sheetName, colMap, rowIndex,
   });
 }
 
+/**
+ * Bulk update candidate screening results in Google Sheet (Single Batch API call)
+ */
+async function batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, updateItems) {
+  if (!updateItems || updateItems.length === 0) return;
+
+  const sheets = getGoogleSheetsClient();
+  const data = [];
+
+  for (const item of updateItems) {
+    const { rowIndex, result } = item;
+    const updates = [
+      { col: 'Match Score (%)', value: result.matchScore },
+      { col: 'ATS Score (%)', value: result.atsScore },
+      { col: 'Final Score (%)', value: result.finalScore },
+      { col: 'Category', value: result.category },
+      { col: 'Critical Flag', value: result.criticalFlag ? 'CRITICAL MISSING' : 'OK' },
+      { col: 'Feedback Summary', value: result.feedback }
+    ];
+
+    const validColIndices = updates
+      .map(u => colMap[u.col])
+      .filter(idx => idx !== undefined);
+
+    if (validColIndices.length === 0) continue;
+
+    const minColIdx = Math.min(...validColIndices);
+    const maxColIdx = Math.max(...validColIndices);
+
+    const rowValues = new Array(maxColIdx - minColIdx + 1).fill('');
+    updates.forEach(u => {
+      const idx = colMap[u.col];
+      if (idx !== undefined) {
+        rowValues[idx - minColIdx] = u.value;
+      }
+    });
+
+    const startColLetter = getColumnLetter(minColIdx + 1);
+    const endColLetter = getColumnLetter(maxColIdx + 1);
+    const range = `${sheetName}!${startColLetter}${rowIndex}:${endColLetter}${rowIndex}`;
+
+    data.push({
+      range,
+      values: [rowValues]
+    });
+  }
+
+  if (data.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        valueInputOption: 'USER_ENTERED',
+        data
+      }
+    });
+  }
+}
+
 function getColumnLetter(colNum) {
   let temp, letter = '';
   while (colNum > 0) {
@@ -493,6 +551,7 @@ module.exports = {
   extractSpreadsheetId,
   getSheetData,
   updateCandidateResult,
+  batchUpdateCandidateResults,
   logOperationToMasterSheet,
   writeBatchToMasterDatabase,
   sortSheetByFinalScore

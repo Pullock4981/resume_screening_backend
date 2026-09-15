@@ -26,7 +26,7 @@ async function fetchResumeText(resumeUrl) {
   try {
     const response = await axios.get(downloadUrl, {
       responseType: 'arraybuffer',
-      timeout: 15000,
+      timeout: 5000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
       }
