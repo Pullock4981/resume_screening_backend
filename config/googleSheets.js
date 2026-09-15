@@ -24,8 +24,19 @@ function getGoogleSheetsClient() {
   let email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let privateKey = process.env.GOOGLE_PRIVATE_KEY;
 
-  // 0. Check if GOOGLE_SERVICE_ACCOUNT_JSON environment variable is set (Recommended for Vercel)
-  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+  // 0. Check if GOOGLE_SERVICE_ACCOUNT_BASE64 or GOOGLE_SERVICE_ACCOUNT_JSON environment variable is set (Recommended for Vercel)
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_BASE64) {
+    try {
+      const decodedStr = Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_BASE64.trim(), 'base64').toString('utf-8');
+      const sa = JSON.parse(decodedStr);
+      if (sa.client_email && sa.private_key) {
+        email = sa.client_email;
+        privateKey = sa.private_key;
+      }
+    } catch (e) {
+      console.error('Error parsing GOOGLE_SERVICE_ACCOUNT_BASE64:', e.message);
+    }
+  } else if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
     try {
       let rawJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON.trim();
       if ((rawJson.startsWith("'") && rawJson.endsWith("'")) || (rawJson.startsWith('"') && rawJson.endsWith('"'))) {
