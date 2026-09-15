@@ -24,26 +24,45 @@ function getGoogleSheetsClient() {
   let email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let privateKey = process.env.GOOGLE_PRIVATE_KEY;
 
-  // 1. Check if service_account.json or credentials.json exists in backend directory
-  const jsonPath1 = path.join(__dirname, '../service_account.json');
-  const jsonPath2 = path.join(__dirname, '../credentials.json');
+  // 0. Check if GOOGLE_SERVICE_ACCOUNT_JSON environment variable is set (Recommended for Vercel)
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    try {
+      let rawJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON.trim();
+      if ((rawJson.startsWith("'") && rawJson.endsWith("'")) || (rawJson.startsWith('"') && rawJson.endsWith('"'))) {
+        rawJson = rawJson.slice(1, -1);
+      }
+      const sa = JSON.parse(rawJson);
+      if (sa.client_email && sa.private_key) {
+        email = sa.client_email;
+        privateKey = sa.private_key;
+      }
+    } catch (e) {
+      console.error('Error parsing GOOGLE_SERVICE_ACCOUNT_JSON:', e.message);
+    }
+  }
 
-  if (fs.existsSync(jsonPath1)) {
-    try {
-      const sa = JSON.parse(fs.readFileSync(jsonPath1, 'utf-8'));
-      if (sa.client_email && sa.private_key) {
-        email = sa.client_email;
-        privateKey = sa.private_key;
-      }
-    } catch (err) {}
-  } else if (fs.existsSync(jsonPath2)) {
-    try {
-      const sa = JSON.parse(fs.readFileSync(jsonPath2, 'utf-8'));
-      if (sa.client_email && sa.private_key) {
-        email = sa.client_email;
-        privateKey = sa.private_key;
-      }
-    } catch (err) {}
+  // 1. Check if service_account.json or credentials.json exists in backend directory
+  if (!email || !privateKey) {
+    const jsonPath1 = path.join(__dirname, '../service_account.json');
+    const jsonPath2 = path.join(__dirname, '../credentials.json');
+
+    if (fs.existsSync(jsonPath1)) {
+      try {
+        const sa = JSON.parse(fs.readFileSync(jsonPath1, 'utf-8'));
+        if (sa.client_email && sa.private_key) {
+          email = sa.client_email;
+          privateKey = sa.private_key;
+        }
+      } catch (err) {}
+    } else if (fs.existsSync(jsonPath2)) {
+      try {
+        const sa = JSON.parse(fs.readFileSync(jsonPath2, 'utf-8'));
+        if (sa.client_email && sa.private_key) {
+          email = sa.client_email;
+          privateKey = sa.private_key;
+        }
+      } catch (err) {}
+    }
   }
 
   // 2. Read from .env file directly if available to reflect latest updates without server restart
@@ -59,7 +78,7 @@ function getGoogleSheetsClient() {
   }
 
   if (!email || !privateKey) {
-    throw new Error('Google Service Account Credentials (GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY) are missing or incomplete. Place service_account.json in backend folder.');
+    throw new Error('Google Service Account Credentials are missing or incomplete. Set GOOGLE_SERVICE_ACCOUNT_JSON in Vercel environment variables.');
   }
 
   // Format private key cleanly
