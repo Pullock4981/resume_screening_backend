@@ -3,25 +3,77 @@ const skillsDict = require('../data/skillsDictionary.json');
 /**
  * Extract target skills and min experience from Job Description
  */
+function normalizeSkillKey(name) {
+  let cleaned = (name || '').toLowerCase().trim();
+  cleaned = cleaned.replace(/\.js$/i, '').replace(/js$/i, '').replace(/css$/i, '');
+  cleaned = cleaned.replace(/[^a-z0-9]/g, '');
+  return cleaned || (name || '').toLowerCase().trim();
+}
+
+/**
+ * Extract target skills and min experience from Job Description
+ */
 function extractSkillsFromJD(jdText, customMustHave = [], customNiceToHave = [], customMinExp = 0) {
   const jdLower = (jdText || '').toLowerCase();
   
-  const mustHave = new Set(customMustHave.map(s => s.trim().toLowerCase()));
-  const niceToHave = new Set(customNiceToHave.map(s => s.trim().toLowerCase()));
+  const mustHaveMap = new Map();
+  const niceToHaveMap = new Map();
+  const seenKeys = new Set();
+
+  const addSkillToMap = (skillObj, targetMap) => {
+    const key = normalizeSkillKey(skillObj.name);
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      targetMap.set(key, skillObj);
+    }
+  };
+
+  const mapToSkillObj = (skillNameStr) => {
+    const cleanStr = (skillNameStr || '').trim();
+    const matchedDictItem = skillsDict.skills.find(
+      s => s.name.toLowerCase() === cleanStr.toLowerCase() || s.aliases.includes(cleanStr.toLowerCase())
+    );
+
+    if (matchedDictItem) {
+      return {
+        name: matchedDictItem.name,
+        aliases: matchedDictItem.aliases
+      };
+    }
+
+    return {
+      name: capitalizeWord(cleanStr),
+      aliases: [cleanStr.toLowerCase()]
+    };
+  };
+
+  // Add custom must-have skills
+  customMustHave.forEach(s => {
+    if (s && s.trim()) {
+      addSkillToMap(mapToSkillObj(s), mustHaveMap);
+    }
+  });
+
+  // Add custom nice-to-have skills
+  customNiceToHave.forEach(s => {
+    if (s && s.trim()) {
+      addSkillToMap(mapToSkillObj(s), niceToHaveMap);
+    }
+  });
 
   // Auto-detect skills from JD text if no custom lists provided
-  if (mustHave.size === 0 && niceToHave.size === 0) {
+  if (mustHaveMap.size === 0 && niceToHaveMap.size === 0) {
     skillsDict.skills.forEach(skill => {
       const isFound = skill.aliases.some(alias => {
-        const regex = new RegExp(`\\b${escapeRegExp(alias)}\\b`, 'i');
+        const regex = new RegExp(`(?:^|[^a-zA-Z0-9\\#\\+\\.\\-])${escapeRegExp(alias)}(?:$|[^a-zA-Z0-9\\#\\+\\.\\-])`, 'i');
         return regex.test(jdLower);
       });
 
       if (isFound) {
-        if (mustHave.size < 5) {
-          mustHave.add(skill.name.toLowerCase());
+        if (mustHaveMap.size < 6) {
+          addSkillToMap({ name: skill.name, aliases: skill.aliases }, mustHaveMap);
         } else {
-          niceToHave.add(skill.name.toLowerCase());
+          addSkillToMap({ name: skill.name, aliases: skill.aliases }, niceToHaveMap);
         }
       }
     });
@@ -33,27 +85,9 @@ function extractSkillsFromJD(jdText, customMustHave = [], customNiceToHave = [],
     minExperience = extractMinExperienceFromJD(jdText);
   }
 
-  const mapToSkillObj = (skillNameStr) => {
-    const matchedDictItem = skillsDict.skills.find(
-      s => s.name.toLowerCase() === skillNameStr || s.aliases.includes(skillNameStr)
-    );
-
-    if (matchedDictItem) {
-      return {
-        name: matchedDictItem.name,
-        aliases: matchedDictItem.aliases
-      };
-    }
-
-    return {
-      name: capitalizeWord(skillNameStr),
-      aliases: [skillNameStr]
-    };
-  };
-
   return {
-    mustHaveSkills: Array.from(mustHave).map(mapToSkillObj),
-    niceToHaveSkills: Array.from(niceToHave).map(mapToSkillObj),
+    mustHaveSkills: Array.from(mustHaveMap.values()),
+    niceToHaveSkills: Array.from(niceToHaveMap.values()),
     minExperience
   };
 }
