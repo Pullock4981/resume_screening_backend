@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { handleScreening, handleSSEProgress, handleGetHistory, handleAtsCheck } = require('../controllers/screeningController');
+const { handleScreening, handleSSEProgress, handleGetHistory, handleAtsCheck, handleLogActivity, handleGetActivityLogs } = require('../controllers/screeningController');
 const { handleRegister, handleLogin, handleGetMe } = require('../controllers/authController');
 const { handleGetUsers, handleUpdateUserStatus, handleUpdateUserRole, handleEditUser, handleGetLoginLogs } = require('../controllers/adminController');
 const { verifyToken, requireAdmin } = require('../middleware/authMiddleware');
@@ -10,6 +10,10 @@ router.post('/screen', handleScreening);
 router.post('/ats-check', handleAtsCheck);
 router.get('/progress', handleSSEProgress);
 router.get('/history', handleGetHistory);
+
+// Activity Audit Log Routes
+router.post('/activity/log', verifyToken, handleLogActivity);
+router.get('/activity/logs', verifyToken, handleGetActivityLogs);
 
 // Authentication Routes
 router.post('/auth/register', handleRegister);

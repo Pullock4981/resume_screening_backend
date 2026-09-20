@@ -128,9 +128,44 @@ const handleAtsCheck = async (req, res) => {
   }
 };
 
+const { logUserLoginToSheet, getLoginLogsFromSheet } = require('../config/googleSheets');
+
+const handleLogActivity = async (req, res) => {
+  try {
+    const { action, details, email, role } = req.body || {};
+    const userEmail = req.user ? req.user.email : (email || 'user@system.com');
+    const userRole = req.user ? req.user.role : (role || 'user');
+
+    const eventDetails = details || `${action || 'User Action'} executed`;
+
+    await logUserLoginToSheet(null, {
+      email: userEmail,
+      role: userRole,
+      details: eventDetails
+    });
+
+    return res.status(200).json({ success: true, message: 'Activity logged successfully.' });
+  } catch (err) {
+    console.error('Log Activity Error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const handleGetActivityLogs = async (req, res) => {
+  try {
+    const logs = await getLoginLogsFromSheet();
+    return res.status(200).json({ success: true, logs });
+  } catch (err) {
+    console.error('Get Activity Logs Error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 module.exports = {
   handleScreening,
   handleSSEProgress,
   handleGetHistory,
-  handleAtsCheck
+  handleAtsCheck,
+  handleLogActivity,
+  handleGetActivityLogs
 };
