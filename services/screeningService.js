@@ -150,6 +150,112 @@ async function processScreening({ sheetUrl, masterSheetUrl, jdText, mustHave = [
   };
 }
 
+async function processAtsCheck({ sheetUrl, resumeUrl, jdText = '' }, onProgress) {
+  const { evaluateAtsRubric } = require('../engine/atsRubricEvaluator');
+
+  // Case 1: Google Sheet URL provided
+  if (sheetUrl && sheetUrl.trim().length > 0) {
+    const sheetInfo = await getSheetData(sheetUrl);
+    const { candidates } = sheetInfo;
+
+    if (!candidates || candidates.length === 0) {
+      throw new Error('No candidate rows found in the Google Sheet.');
+    }
+
+    const total = candidates.length;
+    const results = [];
+
+    if (onProgress) {
+      onProgress({ completed: 0, total, status: 'started' });
+    }
+
+    const chunkSize = 5;
+    for (let i = 0; i < candidates.length; i += chunkSize) {
+      const chunk = candidates.slice(i, i + chunkSize);
+      const chunkResults = await Promise.all(
+        chunk.map(async (candidate) => {
+          let resumeText = '';
+          let fetchError = null;
+
+          try {
+            if (candidate.resumeLink) {
+              resumeText = await fetchResumeText(candidate.resumeLink);
+            } else {
+              fetchError = 'Resume link was missing in sheet.';
+            }
+          } catch (err) {
+            fetchError = err.message;
+          }
+
+          let rubricResult;
+          if (fetchError) {
+            rubricResult = evaluateAtsRubric('', jdText);
+            rubricResult.feedback.summary = `Fetch Error: ${fetchError}`;
+          } else {
+            rubricResult = evaluateAtsRubric(resumeText, jdText);
+          }
+
+          return {
+            name: candidate.name || 'Applicant',
+            email: candidate.email || 'N/A',
+            phone: candidate.phone || 'N/A',
+            resumeLink: candidate.resumeLink || '',
+            ...rubricResult
+          };
+        })
+      );
+
+      chunkResults.forEach((item, idx) => {
+        results.push(item);
+        if (onProgress) {
+          onProgress({
+            completed: i + idx + 1,
+            total,
+            currentCandidate: item.name,
+            result: item,
+            status: 'processing'
+          });
+        }
+      });
+    }
+
+    return { total, results };
+  }
+
+  // Case 2: Single Direct Resume Link provided
+  if (resumeUrl && resumeUrl.trim().length > 0) {
+    let resumeText = '';
+    let fetchError = null;
+
+    try {
+      resumeText = await fetchResumeText(resumeUrl);
+    } catch (err) {
+      fetchError = err.message;
+    }
+
+    let rubricResult;
+    if (fetchError) {
+      rubricResult = evaluateAtsRubric('', jdText);
+      rubricResult.feedback.summary = `Fetch Error: ${fetchError}`;
+    } else {
+      rubricResult = evaluateAtsRubric(resumeText, jdText);
+    }
+
+    const singleItem = {
+      name: 'Direct Candidate Resume',
+      email: 'N/A',
+      phone: 'N/A',
+      resumeLink: resumeUrl,
+      ...rubricResult
+    };
+
+    return { total: 1, results: [singleItem] };
+  }
+
+  throw new Error('Please provide either a Candidate Google Sheet URL or a Direct Resume Link.');
+}
+
 module.exports = {
-  processScreening
+  processScreening,
+  processAtsCheck
 };

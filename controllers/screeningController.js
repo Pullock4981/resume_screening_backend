@@ -82,8 +82,39 @@ const handleGetHistory = async (req, res) => {
   }
 };
 
+const handleAtsCheck = async (req, res) => {
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  try {
+    const { sheetUrl, resumeUrl, jdText } = req.body;
+
+    if (!sheetUrl && !resumeUrl) {
+      res.write(JSON.stringify({ status: 'error', error: 'Google Sheet URL or Resume Link is required.' }) + '\n');
+      return res.end();
+    }
+
+    const { processAtsCheck } = require('../services/screeningService');
+    const outcome = await processAtsCheck(
+      { sheetUrl, resumeUrl, jdText },
+      (progressData) => {
+        res.write(JSON.stringify(progressData) + '\n');
+      }
+    );
+
+    res.write(JSON.stringify({ status: 'completed', data: outcome }) + '\n');
+    res.end();
+  } catch (error) {
+    console.error('ATS Check Error:', error);
+    res.write(JSON.stringify({ status: 'error', error: error.message }) + '\n');
+    res.end();
+  }
+};
+
 module.exports = {
   handleScreening,
   handleSSEProgress,
-  handleGetHistory
+  handleGetHistory,
+  handleAtsCheck
 };
