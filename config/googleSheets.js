@@ -741,6 +741,13 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
       });
     }
 
+    return historyRecords;
+  } catch (err) {
+    console.error('Failed to fetch master history from Google Sheets:', err.message);
+    return [];
+  }
+}
+
 /**
  * Ensure Users tab and Login_Logs tab exist in Master Central Google Sheet
  */
