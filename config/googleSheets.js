@@ -204,12 +204,17 @@ async function getSheetData(sheetUrlOrId) {
   });
 
   if (headersAdded) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `${sheetName}!A1`,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [updatedHeaders] },
-    });
+    try {
+      const sheets = getGoogleSheetsClient();
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${sheetName}!A1`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [updatedHeaders] },
+      });
+    } catch (hErr) {
+      console.error('Failed to update sheet header row:', hErr.message);
+    }
   }
 
   // Create column mapping dictionary for output writing
