@@ -116,52 +116,35 @@ function evaluateAtsRubric(resumeText, jdText = '') {
 
   // -------------------------------------------------------------
   // Category 3: Keyword Match (25 Points)
-  // % of job keywords found in resume, scaled to 25
+  // Technical & Domain Industry Keyword Density (No JD required)
   // -------------------------------------------------------------
   let keywordScore = 0;
   const keywordDetails = [];
   let matchedKeywords = [];
-  let missingKeywords = [];
 
-  let targetKeywords = [];
-  if (jdText && jdText.trim().length > 10) {
-    // Extract target keywords from JD
-    const jdLower = jdText.toLowerCase();
-    skillsDict.skills.forEach(skill => {
-      const isFound = skill.aliases.some(alias => new RegExp(`\\b${escapeRegExp(alias)}\\b`, 'i').test(jdLower));
-      if (isFound) targetKeywords.push(skill.name);
-    });
-
-    if (targetKeywords.length === 0) {
-      // Fallback: extract capitalized words from JD
-      const words = jdText.match(/\b[A-Z][a-zA-Z0-9\+\#\.\-]{1,20}\b/g) || [];
-      const filterCommon = ['The', 'And', 'For', 'With', 'Our', 'We', 'You', 'Must', 'Have', 'Work', 'Team', 'Role', 'Required'];
-      targetKeywords = Array.from(new Set(words.filter(w => !filterCommon.includes(w))));
+  skillsDict.skills.forEach(skill => {
+    const isPresent = skill.aliases.some(alias => new RegExp(`(?:^|[^a-zA-Z0-9\\#\\+\\.\\-])${escapeRegExp(alias)}(?:$|[^a-zA-Z0-9\\#\\+\\.\\-])`, 'i').test(lowerText));
+    if (isPresent) {
+      matchedKeywords.push(skill.name);
     }
-  } else {
-    // Default mode: match against dictionary technical skills
-    targetKeywords = skillsDict.skills.map(s => s.name);
-  }
+  });
 
-  if (targetKeywords.length > 0) {
-    targetKeywords.forEach(kw => {
-      const matchedDict = skillsDict.skills.find(s => s.name.toLowerCase() === kw.toLowerCase());
-      const aliases = matchedDict ? matchedDict.aliases : [kw.toLowerCase()];
-      const isPresent = aliases.some(alias => new RegExp(`\\b${escapeRegExp(alias)}\\b`, 'i').test(lowerText));
-
-      if (isPresent) {
-        matchedKeywords.push(kw);
-      } else {
-        missingKeywords.push(kw);
-      }
-    });
-
-    const matchRatio = matchedKeywords.length / targetKeywords.length;
-    keywordScore = Math.round(matchRatio * 25);
-    keywordDetails.push(`${matchedKeywords.length} of ${targetKeywords.length} keywords matched (${Math.round(matchRatio * 100)}%) (+${keywordScore}/25 pts)`);
-  } else {
+  const count = matchedKeywords.length;
+  if (count >= 8) {
+    keywordScore = 25;
+    keywordDetails.push(`Excellent keyword density (${count} tech/domain skills detected) (+25/25 pts)`);
+  } else if (count >= 5) {
+    keywordScore = 20;
+    keywordDetails.push(`Good keyword density (${count} tech/domain skills detected) (+20/25 pts)`);
+  } else if (count >= 3) {
     keywordScore = 15;
-    keywordDetails.push('Standard keyword density detected (+15/25 pts)');
+    keywordDetails.push(`Moderate keyword density (${count} tech/domain skills detected) (+15/25 pts)`);
+  } else if (count >= 1) {
+    keywordScore = 10;
+    keywordDetails.push(`Low keyword density (${count} tech skill detected) (+10/25 pts)`);
+  } else {
+    keywordScore = 5;
+    keywordDetails.push('Very low keyword density (no standard tech/domain skills detected) (-20 pts)');
   }
 
   // -------------------------------------------------------------

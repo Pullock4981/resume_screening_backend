@@ -150,7 +150,7 @@ async function processScreening({ sheetUrl, masterSheetUrl, jdText, mustHave = [
   };
 }
 
-async function processAtsCheck({ sheetUrl, resumeUrl, jdText = '' }, onProgress) {
+async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
   const { evaluateAtsRubric } = require('../engine/atsRubricEvaluator');
 
   // Case 1: Google Sheet URL provided
@@ -189,10 +189,10 @@ async function processAtsCheck({ sheetUrl, resumeUrl, jdText = '' }, onProgress)
 
           let rubricResult;
           if (fetchError) {
-            rubricResult = evaluateAtsRubric('', jdText);
+            rubricResult = evaluateAtsRubric('');
             rubricResult.feedback.summary = `Fetch Error: ${fetchError}`;
           } else {
-            rubricResult = evaluateAtsRubric(resumeText, jdText);
+            rubricResult = evaluateAtsRubric(resumeText);
           }
 
           return {
@@ -235,10 +235,10 @@ async function processAtsCheck({ sheetUrl, resumeUrl, jdText = '' }, onProgress)
 
     let rubricResult;
     if (fetchError) {
-      rubricResult = evaluateAtsRubric('', jdText);
+      rubricResult = evaluateAtsRubric('');
       rubricResult.feedback.summary = `Fetch Error: ${fetchError}`;
     } else {
-      rubricResult = evaluateAtsRubric(resumeText, jdText);
+      rubricResult = evaluateAtsRubric(resumeText);
     }
 
     const singleItem = {
