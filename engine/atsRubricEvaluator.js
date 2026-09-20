@@ -346,7 +346,7 @@ function evaluateAtsRubric(resumeText, jdText = '') {
     breakdown: {
       contactInfo: { score: contactScore, max: 15, details: contactDetails },
       essentialSections: { score: sectionScore, max: 25, details: sectionDetails },
-      keywordMatch: { score: keywordScore, max: 25, details: keywordDetails, matchedKeywords, missingKeywords: missingKeywords.slice(0, 10) },
+      keywordMatch: { score: keywordScore, max: 25, details: keywordDetails, matchedKeywords, missingKeywords: [] },
       actionVerbsImpact: { score: actionImpactScore, max: 15, details: actionImpactDetails },
       formattingReadability: { score: formatScore, max: 10, details: formatDetails },
       atsParseability: { score: atsScore, max: 10, details: atsDetails }
