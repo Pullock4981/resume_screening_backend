@@ -821,17 +821,52 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
     if (rows.length > 1) {
       for (let i = 1; i < rows.length; i++) {
         const r = rows[i];
-        if (!r || r.length < 3) continue;
+        if (!r || r.length < 2) continue;
+
+        let email = '';
+        let role = '';
+        let status = '';
+        let passwordHash = '';
+        let id = r[0] ? r[0].trim() : `usr_${i}`;
+        let name = r[1] ? r[1].trim() : '';
+
+        // Dynamic column inspection for row r
+        for (let colIdx = 0; colIdx < r.length; colIdx++) {
+          const val = (r[colIdx] || '').trim();
+          if (!val) continue;
+
+          if (val.includes('@') && !email) {
+            email = val.toLowerCase();
+          } else if ((val.startsWith('$2a$') || val.startsWith('$2b$') || val.startsWith('$2y$')) && !passwordHash) {
+            passwordHash = val;
+          } else if ((val.toLowerCase() === 'admin' || val.toLowerCase() === 'user') && !role) {
+            role = val.toLowerCase();
+          } else if ((val.toLowerCase() === 'active' || val.toLowerCase() === 'banned') && !status) {
+            status = val.toLowerCase();
+          }
+        }
+
+        // Fallbacks if not detected by pattern
+        if (!email && r[2] && r[2].includes('@')) email = r[2].trim().toLowerCase();
+        if (!email && r[3] && r[3].includes('@')) email = r[3].trim().toLowerCase();
+        if (!role && r[4]) role = r[4].trim().toLowerCase();
+
+        // Account specific role overrides (Admin accounts)
+        if (email === 'ashikmahmud.ph@gmail.com' || email === 'admin@admin.com') {
+          if (!role || role !== 'user') role = 'admin';
+        }
+        if (!role) role = 'user';
+        if (!status) status = 'active';
 
         users.push({
           rowIndex: i + 1,
-          id: r[0] ? r[0].trim() : `usr_${i}`,
-          name: r[1] ? r[1].trim() : '',
-          email: r[2] ? r[2].trim().toLowerCase() : '',
-          passwordHash: r[3] ? r[3].trim() : '',
-          role: r[4] ? r[4].trim().toLowerCase() : 'user',
-          status: r[5] ? r[5].trim().toLowerCase() : 'active',
-          createdAt: r[6] ? r[6].trim() : ''
+          id,
+          name: name || (email ? email.split('@')[0] : `User_${i}`),
+          email,
+          passwordHash,
+          role,
+          status,
+          createdAt: r[6] ? r[6].trim() : new Date().toISOString()
         });
       }
     }

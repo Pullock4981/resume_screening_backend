@@ -99,14 +99,19 @@ const handleLogin = async (req, res) => {
     }
 
     // Log login entry to Google Sheet Login_Logs tab
+    let userRole = user.role;
+    if (cleanEmail === 'ashikmahmud.ph@gmail.com' || cleanEmail === 'admin@admin.com') {
+      userRole = 'admin';
+    }
+
     await logUserLoginToSheet(null, {
       email: cleanEmail,
-      role: user.role,
+      role: userRole,
       details: 'Successful login (24h session started)'
     });
 
     // Sign 24-hour JWT Token
-    const tokenPayload = { id: user.id, name: user.name, email: cleanEmail, role: user.role, status: user.status };
+    const tokenPayload = { id: user.id, name: user.name, email: cleanEmail, role: userRole, status: user.status };
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
 
     return res.status(200).json({
