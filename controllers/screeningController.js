@@ -60,7 +60,11 @@ const handleSSEProgress = (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  } else if (typeof res.flush === 'function') {
+    res.flush();
+  }
 
   const clientId = Date.now();
   const newClient = { id: clientId, res };
@@ -86,9 +90,12 @@ const handleAtsCheck = async (req, res) => {
   res.setHeader('Content-Type', 'application/x-ndjson');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
 
   try {
-    const { sheetUrl, resumeUrl } = req.body;
+    const { sheetUrl, resumeUrl } = req.body || {};
 
     if (!sheetUrl && !resumeUrl) {
       res.write(JSON.stringify({ status: 'error', error: 'Google Sheet URL or Resume Link is required.' }) + '\n');
@@ -99,7 +106,9 @@ const handleAtsCheck = async (req, res) => {
     const outcome = await processAtsCheck(
       { sheetUrl, resumeUrl },
       (progressData) => {
-        res.write(JSON.stringify(progressData) + '\n');
+        try {
+          res.write(JSON.stringify(progressData) + '\n');
+        } catch (e) {}
       }
     );
 
@@ -107,8 +116,10 @@ const handleAtsCheck = async (req, res) => {
     res.end();
   } catch (error) {
     console.error('ATS Check Error:', error);
-    res.write(JSON.stringify({ status: 'error', error: error.message }) + '\n');
-    res.end();
+    try {
+      res.write(JSON.stringify({ status: 'error', error: error.message || 'ATS Resume Evaluation failed.' }) + '\n');
+      res.end();
+    } catch (e) {}
   }
 };
 
