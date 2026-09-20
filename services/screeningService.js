@@ -156,7 +156,7 @@ async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
   // Case 1: Google Sheet URL provided
   if (sheetUrl && sheetUrl.trim().length > 0) {
     const sheetInfo = await getSheetData(sheetUrl);
-    const { candidates } = sheetInfo;
+    const { spreadsheetId, sheetName, colMap, candidates } = sheetInfo;
 
     if (!candidates || candidates.length === 0) {
       throw new Error('No candidate rows found in the Google Sheet.');
@@ -164,6 +164,7 @@ async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
 
     const total = candidates.length;
     const results = [];
+    const updateItems = [];
 
     if (onProgress) {
       onProgress({ completed: 0, total, status: 'started' });
@@ -195,28 +196,59 @@ async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
             rubricResult = evaluateAtsRubric(resumeText);
           }
 
-          return {
+          const resultItem = {
             name: candidate.name || 'Applicant',
             email: candidate.email || 'N/A',
             phone: candidate.phone || 'N/A',
             resumeLink: candidate.resumeLink || '',
+            atsScore: rubricResult.totalScore,
+            matchScore: rubricResult.breakdown?.keywordMatch?.score || 0,
+            finalScore: rubricResult.totalScore,
+            category: rubricResult.grade,
+            criticalFlag: rubricResult.totalScore < 55,
+            feedback: rubricResult.feedback?.summary || '',
             ...rubricResult
           };
+
+          return { candidate, resultItem };
         })
       );
 
-      chunkResults.forEach((item, idx) => {
-        results.push(item);
+      chunkResults.forEach(({ candidate, resultItem }, idx) => {
+        results.push(resultItem);
+        updateItems.push({ rowIndex: candidate.rowIndex, result: resultItem });
+
         if (onProgress) {
           onProgress({
             completed: i + idx + 1,
             total,
-            currentCandidate: item.name,
-            result: item,
+            currentCandidate: resultItem.name,
+            result: resultItem,
             status: 'processing'
           });
         }
       });
+    }
+
+    // Step 4: Batch Update ATS scores & feedback back to the Google Sheet columns!
+    try {
+      await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, updateItems);
+    } catch (writeErr) {
+      console.error('Failed to batch update Google Sheet:', writeErr.message);
+    }
+
+    // Step 5: Automatically sort candidate sheet rows by Final Score (%) in DESCENDING order!
+    try {
+      await sortSheetByFinalScore(spreadsheetId, sheetName, colMap);
+    } catch (sortErr) {
+      console.error('Failed to sort candidate sheet:', sortErr.message);
+    }
+
+    // Step 6: Log operation summary to Master_Index tab on the sheet
+    try {
+      await logOperationToMasterSheet(spreadsheetId, `ATS_Check_${sheetName}`, sheetName, total, results);
+    } catch (logErr) {
+      console.error('Failed to log operation to master sheet:', logErr.message);
     }
 
     return { total, results };
