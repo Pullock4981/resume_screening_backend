@@ -420,8 +420,8 @@ async function logOperationToMasterSheet(spreadsheetId, operationName, sheetName
         'Operation / Job Name',
         'Date & Time Executed',
         'Total Candidates',
-        'Good to Go (≥85%)',
-        'Waiting List (70-84%)',
+        'Good to Go (≥80%)',
+        'Waiting List (70-79%)',
         'Details Sheet Tab'
       ];
 
@@ -434,8 +434,8 @@ async function logOperationToMasterSheet(spreadsheetId, operationName, sheetName
     }
 
     // 2. Count statistics
-    const goodToGoCount = results.filter(r => r.finalScore >= 85).length;
-    const waitingListCount = results.filter(r => r.finalScore >= 70 && r.finalScore < 85).length;
+    const goodToGoCount = results.filter(r => r.finalScore >= 80).length;
+    const waitingListCount = results.filter(r => r.finalScore >= 70 && r.finalScore < 80).length;
     
     const now = new Date();
     const timeFormatted = now.toLocaleString('en-US', {
@@ -734,8 +734,8 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
         dateFormatted,
         studentSheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
         totalCandidates: candidates.length || totalCandidates,
-        goodToGoCount: candidates.length ? candidates.filter(c => c.finalScore >= 85).length : goodToGoCount,
-        waitingListCount: candidates.length ? candidates.filter(c => c.finalScore >= 70 && c.finalScore < 85).length : waitingListCount,
+        goodToGoCount: candidates.length ? candidates.filter(c => c.finalScore >= 80).length : goodToGoCount,
+        waitingListCount: candidates.length ? candidates.filter(c => c.finalScore >= 70 && c.finalScore < 80).length : waitingListCount,
         notMatchingCount: candidates.length ? candidates.filter(c => c.finalScore < 70).length : notMatchingCount,
         candidates
       });

@@ -14,10 +14,10 @@ function generateFeedback(candidateName, scoreDetails, matchingResults, atsResul
 
   // Tier-specific evaluation feedback message
   let tierFeedback = '';
-  if (finalScore >= 85) {
-    tierFeedback = '🟢 Good to Go (85%+ Match): Excellent candidate! Resume strongly satisfies core JD requirements and is recommended for immediate interview.';
+  if (finalScore >= 80) {
+    tierFeedback = '🟢 Good to Go (80%+ Match): Excellent candidate! Resume strongly satisfies core JD requirements and is recommended for immediate interview.';
   } else if (finalScore >= 70) {
-    tierFeedback = '🟡 Waiting List (70-84% Match): Solid candidate. Meets most key JD requirements with minor gaps. Kept on waiting list for secondary review.';
+    tierFeedback = '🟡 Waiting List (70-79% Match): Solid candidate. Meets most key JD requirements with minor gaps. Kept on waiting list for secondary review.';
   } else if (finalScore >= 50) {
     tierFeedback = '🟠 Partial Match (50-69% Match): Candidate possesses some relevant skills but misses several core competencies required in JD.';
   } else if (finalScore >= 30) {
