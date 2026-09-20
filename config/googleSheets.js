@@ -741,9 +741,252 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
       });
     }
 
-    return historyRecords;
+/**
+ * Ensure Users tab and Login_Logs tab exist in Master Central Google Sheet
+ */
+async function ensureUserTabsExist(masterSheetUrlOrId) {
+  try {
+    const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
+    if (!spreadsheetId) return;
+
+    const sheets = getGoogleSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const existingTitles = meta.data.sheets.map(s => s.properties.title);
+
+    const requests = [];
+    if (!existingTitles.includes('Users')) {
+      requests.push({ addSheet: { properties: { title: 'Users' } } });
+    }
+    if (!existingTitles.includes('Login_Logs')) {
+      requests.push({ addSheet: { properties: { title: 'Login_Logs' } } });
+    }
+
+    if (requests.length > 0) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests }
+      });
+    }
+
+    if (!existingTitles.includes('Users')) {
+      const userHeaders = ['User ID', 'Full Name', 'Email Address', 'Password Hash', 'Role', 'Status', 'Created At'];
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: 'Users!A1',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [userHeaders] }
+      });
+    }
+
+    if (!existingTitles.includes('Login_Logs')) {
+      const logHeaders = ['Log ID', 'Email', 'Role', 'Login Date & Time', 'IP / Details'];
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: 'Login_Logs!A1',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [logHeaders] }
+      });
+    }
   } catch (err) {
-    console.error('Failed to fetch master history from Google Sheets:', err.message);
+    console.error('Failed to ensure user tabs exist:', err.message);
+  }
+}
+
+/**
+ * Fetch all users from Users tab in Master Central Google Sheet
+ */
+async function getUsersFromSheet(masterSheetUrlOrId) {
+  try {
+    const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
+    if (!spreadsheetId) return [];
+
+    await ensureUserTabsExist(spreadsheetId);
+    const sheets = getGoogleSheetsClient();
+
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: 'Users!A1:G1000'
+    });
+
+    const rows = res.data.values;
+    if (!rows || rows.length <= 1) return [];
+
+    const users = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || r.length < 3) continue;
+
+      users.push({
+        rowIndex: i + 1,
+        id: r[0] ? r[0].trim() : `usr_${i}`,
+        name: r[1] ? r[1].trim() : '',
+        email: r[2] ? r[2].trim().toLowerCase() : '',
+        passwordHash: r[3] ? r[3].trim() : '',
+        role: r[4] ? r[4].trim().toLowerCase() : 'user',
+        status: r[5] ? r[5].trim().toLowerCase() : 'active',
+        createdAt: r[6] ? r[6].trim() : ''
+      });
+    }
+
+    return users;
+  } catch (err) {
+    console.error('Failed to get users from sheet:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Save new user row to Users tab
+ */
+async function saveUserToSheet(masterSheetUrlOrId, userObj) {
+  try {
+    const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
+    if (!spreadsheetId) return;
+
+    await ensureUserTabsExist(spreadsheetId);
+    const sheets = getGoogleSheetsClient();
+
+    const newRow = [
+      userObj.id,
+      userObj.name,
+      userObj.email.toLowerCase(),
+      userObj.passwordHash,
+      userObj.role || 'user',
+      userObj.status || 'active',
+      userObj.createdAt || new Date().toISOString()
+    ];
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: 'Users!A1',
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [newRow] }
+    });
+  } catch (err) {
+    console.error('Failed to save user to sheet:', err.message);
+    throw err;
+  }
+}
+
+/**
+ * Update user row details in Users tab (role, status, name, email)
+ */
+async function updateUserInSheet(masterSheetUrlOrId, userId, updateData) {
+  try {
+    const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
+    if (!spreadsheetId) return;
+
+    const users = await getUsersFromSheet(spreadsheetId);
+    const targetUser = users.find(u => u.id === userId || u.email.toLowerCase() === (userId || '').toLowerCase());
+    if (!targetUser) {
+      throw new Error(`User not found with ID/Email: ${userId}`);
+    }
+
+    const sheets = getGoogleSheetsClient();
+    const updatedName = updateData.name !== undefined ? updateData.name : targetUser.name;
+    const updatedEmail = updateData.email !== undefined ? updateData.email.toLowerCase() : targetUser.email;
+    const updatedRole = updateData.role !== undefined ? updateData.role.toLowerCase() : targetUser.role;
+    const updatedStatus = updateData.status !== undefined ? updateData.status.toLowerCase() : targetUser.status;
+
+    const rowValues = [
+      targetUser.id,
+      updatedName,
+      updatedEmail,
+      targetUser.passwordHash,
+      updatedRole,
+      updatedStatus,
+      targetUser.createdAt
+    ];
+
+    const range = `Users!A${targetUser.rowIndex}:G${targetUser.rowIndex}`;
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [rowValues] }
+    });
+  } catch (err) {
+    console.error('Failed to update user in sheet:', err.message);
+    throw err;
+  }
+}
+
+/**
+ * Log user login audit entry to Login_Logs tab
+ */
+async function logUserLoginToSheet(masterSheetUrlOrId, logObj) {
+  try {
+    const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
+    if (!spreadsheetId) return;
+
+    await ensureUserTabsExist(spreadsheetId);
+    const sheets = getGoogleSheetsClient();
+
+    const logId = `log_${Date.now()}`;
+    const dateFormatted = new Date().toLocaleString('en-US', {
+      timeZone: 'Asia/Dhaka',
+      dateStyle: 'medium',
+      timeStyle: 'medium'
+    });
+
+    const newRow = [
+      logId,
+      logObj.email.toLowerCase(),
+      logObj.role || 'user',
+      dateFormatted,
+      logObj.details || 'User logged in successfully'
+    ];
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: 'Login_Logs!A1',
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [newRow] }
+    });
+  } catch (err) {
+    console.error('Failed to log user login to sheet:', err.message);
+  }
+}
+
+/**
+ * Fetch all login audit logs from Login_Logs tab
+ */
+async function getLoginLogsFromSheet(masterSheetUrlOrId) {
+  try {
+    const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
+    if (!spreadsheetId) return [];
+
+    await ensureUserTabsExist(spreadsheetId);
+    const sheets = getGoogleSheetsClient();
+
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: 'Login_Logs!A1:E1000'
+    });
+
+    const rows = res.data.values;
+    if (!rows || rows.length <= 1) return [];
+
+    const logs = [];
+    for (let i = rows.length - 1; i >= 1; i--) { // newest first
+      const r = rows[i];
+      if (!r || r.length < 2) continue;
+
+      logs.push({
+        id: r[0] || `log_${i}`,
+        email: r[1] || '',
+        role: r[2] || 'user',
+        loginTime: r[3] || '',
+        details: r[4] || ''
+      });
+    }
+
+    return logs;
+  } catch (err) {
+    console.error('Failed to get login logs from sheet:', err.message);
     return [];
   }
 }
@@ -756,5 +999,12 @@ module.exports = {
   logOperationToMasterSheet,
   writeBatchToMasterDatabase,
   sortSheetByFinalScore,
-  fetchMasterHistory
+  fetchMasterHistory,
+  ensureUserTabsExist,
+  getUsersFromSheet,
+  saveUserToSheet,
+  updateUserInSheet,
+  logUserLoginToSheet,
+  getLoginLogsFromSheet
 };
+
