@@ -97,6 +97,29 @@ function getGoogleSheetsClient() {
   return google.sheets({ version: 'v4', auth });
 }
 
+function parseCsvRows(csvText) {
+  if (!csvText) return [];
+  const lines = csvText.split(/\r?\n/);
+  return lines.map(line => {
+    const result = [];
+    let cell = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        result.push(cell.trim());
+        cell = '';
+      } else {
+        cell += char;
+      }
+    }
+    result.push(cell.trim());
+    return result;
+  }).filter(r => r.some(c => c.length > 0));
+}
+
 /**
  * Fetch rows from Google Sheet and map them with column indices
  */
@@ -106,30 +129,58 @@ async function getSheetData(sheetUrlOrId) {
     throw new Error('Invalid Google Sheet URL or Spreadsheet ID.');
   }
 
-  const sheets = getGoogleSheetsClient();
+  const gidMatch = (sheetUrlOrId || '').match(/gid=([0-9]+)/);
+  const targetGid = gidMatch ? gidMatch[1] : null;
 
-  // Get sheet metadata to find first sheet name
-  const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const sheetName = meta.data.sheets[0].properties.title;
+  let sheetName = 'Sheet1';
+  let rows = [];
 
-  // Read all values
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${sheetName}!A1:Z1000`,
-  });
+  try {
+    const sheets = getGoogleSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    
+    if (meta.data && meta.data.sheets && meta.data.sheets.length > 0) {
+      if (targetGid) {
+        const foundTab = meta.data.sheets.find(s => s.properties.sheetId.toString() === targetGid);
+        sheetName = foundTab ? foundTab.properties.title : meta.data.sheets[0].properties.title;
+      } else {
+        sheetName = meta.data.sheets[0].properties.title;
+      }
+    }
 
-  const rows = response.data.values;
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName}'!A1:Z1000`,
+    });
+
+    rows = response.data.values || [];
+  } catch (apiErr) {
+    // Fallback to public CSV export if service account permission fails or sheet is public
+    try {
+      const axios = require('axios');
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv${targetGid ? `&gid=${targetGid}` : ''}`;
+      const csvRes = await axios.get(csvUrl);
+      if (csvRes.data) {
+        rows = parseCsvRows(csvRes.data);
+      } else {
+        throw apiErr;
+      }
+    } catch (csvErr) {
+      throw new Error(`Google Sheet Access Error: ${apiErr.message || 'Permission denied'}. Please check if the Google Sheet URL is valid and shared (or set to "Anyone with link can view").`);
+    }
+  }
+
   if (!rows || rows.length === 0) {
-    throw new Error('Google Sheet is empty.');
+    throw new Error('Google Sheet is empty or no readable rows found.');
   }
 
   const headers = rows[0].map(h => h ? h.trim() : '');
 
-  // Find column indices (case-insensitive)
-  const nameIdx = headers.findIndex(h => /name|candidate/i.test(h));
+  // Find column indices (case-insensitive & flexible)
+  const nameIdx = headers.findIndex(h => /name|candidate|applicant|student/i.test(h));
   const emailIdx = headers.findIndex(h => /email|mail/i.test(h));
-  const phoneIdx = headers.findIndex(h => /phone|mobile|contact/i.test(h));
-  const resumeIdx = headers.findIndex(h => /resume|cv|link|url/i.test(h));
+  const phoneIdx = headers.findIndex(h => /phone|mobile|contact|num/i.test(h));
+  const resumeIdx = headers.findIndex(h => /resume|cv|link|url|drive|file/i.test(h));
 
   // Required output headers
   const requiredOutputHeaders = [
