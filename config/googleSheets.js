@@ -815,24 +815,47 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
       range: 'Users!A1:G1000'
     });
 
-    const rows = res.data.values;
-    if (!rows || rows.length <= 1) return [];
-
+    const rows = res.data.values || [];
     const users = [];
-    for (let i = 1; i < rows.length; i++) {
-      const r = rows[i];
-      if (!r || r.length < 3) continue;
 
-      users.push({
-        rowIndex: i + 1,
-        id: r[0] ? r[0].trim() : `usr_${i}`,
-        name: r[1] ? r[1].trim() : '',
-        email: r[2] ? r[2].trim().toLowerCase() : '',
-        passwordHash: r[3] ? r[3].trim() : '',
-        role: r[4] ? r[4].trim().toLowerCase() : 'user',
-        status: r[5] ? r[5].trim().toLowerCase() : 'active',
-        createdAt: r[6] ? r[6].trim() : ''
-      });
+    if (rows.length > 1) {
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.length < 3) continue;
+
+        users.push({
+          rowIndex: i + 1,
+          id: r[0] ? r[0].trim() : `usr_${i}`,
+          name: r[1] ? r[1].trim() : '',
+          email: r[2] ? r[2].trim().toLowerCase() : '',
+          passwordHash: r[3] ? r[3].trim() : '',
+          role: r[4] ? r[4].trim().toLowerCase() : 'user',
+          status: r[5] ? r[5].trim().toLowerCase() : 'active',
+          createdAt: r[6] ? r[6].trim() : ''
+        });
+      }
+    }
+
+    // If Users tab has no accounts yet, seed default Admin account (admin@admin.com / admin123)
+    if (users.length === 0) {
+      const bcrypt = require('bcryptjs');
+      const defaultHash = await bcrypt.hash('admin123', 10);
+      const defaultAdmin = {
+        id: 'usr_admin_default',
+        name: 'System Admin',
+        email: 'admin@admin.com',
+        passwordHash: defaultHash,
+        role: 'admin',
+        status: 'active',
+        createdAt: new Date().toISOString()
+      };
+
+      try {
+        await saveUserToSheet(spreadsheetId, defaultAdmin);
+        users.push({ rowIndex: 2, ...defaultAdmin });
+      } catch (seedErr) {
+        console.error('Failed to seed default admin user:', seedErr.message);
+      }
     }
 
     return users;
