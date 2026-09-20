@@ -150,7 +150,7 @@ async function processScreening({ sheetUrl, masterSheetUrl, jdText, mustHave = [
   };
 }
 
-async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
+async function processAtsCheck({ sheetUrl, masterSheetUrl, resumeUrl, operationName = '' }, onProgress) {
   const { evaluateAtsRubric } = require('../engine/atsRubricEvaluator');
 
   // Case 1: Google Sheet URL provided
@@ -197,6 +197,7 @@ async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
           }
 
           const resultItem = {
+            ...rubricResult,
             name: candidate.name || 'Applicant',
             email: candidate.email || 'N/A',
             phone: candidate.phone || 'N/A',
@@ -206,8 +207,7 @@ async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
             finalScore: rubricResult.totalScore,
             category: rubricResult.grade,
             criticalFlag: rubricResult.totalScore < 55,
-            feedback: rubricResult.feedback?.summary || '',
-            ...rubricResult
+            feedback: rubricResult.feedback?.summary || ''
           };
 
           return { candidate, resultItem };
@@ -234,7 +234,7 @@ async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
     try {
       await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, updateItems);
     } catch (writeErr) {
-      console.error('Failed to batch update Google Sheet:', writeErr.message);
+      console.error('Failed to batch update ATS results in Google Sheet:', writeErr.message);
     }
 
     // Step 5: Automatically sort candidate sheet rows by Final Score (%) in DESCENDING order!
@@ -244,11 +244,19 @@ async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
       console.error('Failed to sort candidate sheet:', sortErr.message);
     }
 
-    // Step 6: Log operation summary to Master_Index tab on the sheet
+    // Step 6: Log operation summary to Master Central Database Sheet & Master_Index
+    const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || sheetUrl;
+    const isDifferentMaster = extractSpreadsheetId(targetMasterUrl) !== spreadsheetId;
+    const opName = operationName || `ATS_Check_${sheetName}`;
+
     try {
-      await logOperationToMasterSheet(spreadsheetId, `ATS_Check_${sheetName}`, sheetName, total, results);
-    } catch (logErr) {
-      console.error('Failed to log operation to master sheet:', logErr.message);
+      if (isDifferentMaster) {
+        await writeBatchToMasterDatabase(targetMasterUrl, opName, results);
+      } else {
+        await logOperationToMasterSheet(spreadsheetId, opName, sheetName, total, results);
+      }
+    } catch (masterErr) {
+      console.error('Failed to log ATS check to Master Sheet:', masterErr.message);
     }
 
     return { total, results };
@@ -274,12 +282,28 @@ async function processAtsCheck({ sheetUrl, resumeUrl }, onProgress) {
     }
 
     const singleItem = {
+      ...rubricResult,
       name: 'Direct Candidate Resume',
       email: 'N/A',
       phone: 'N/A',
       resumeLink: resumeUrl,
-      ...rubricResult
+      atsScore: rubricResult.totalScore,
+      matchScore: rubricResult.breakdown?.keywordMatch?.score || 0,
+      finalScore: rubricResult.totalScore,
+      category: rubricResult.grade,
+      criticalFlag: rubricResult.totalScore < 55,
+      feedback: rubricResult.feedback?.summary || ''
     };
+
+    const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL;
+    if (targetMasterUrl) {
+      try {
+        const opName = operationName || 'ATS_Direct_Check';
+        await writeBatchToMasterDatabase(targetMasterUrl, opName, [singleItem]);
+      } catch (masterErr) {
+        console.error('Failed to log single ATS check to Master Sheet:', masterErr.message);
+      }
+    }
 
     return { total: 1, results: [singleItem] };
   }

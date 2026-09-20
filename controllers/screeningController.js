@@ -95,7 +95,7 @@ const handleAtsCheck = async (req, res) => {
   }
 
   try {
-    const { sheetUrl, resumeUrl } = req.body || {};
+    const { sheetUrl, masterSheetUrl, resumeUrl, operationName } = req.body || {};
 
     if (!sheetUrl && !resumeUrl) {
       res.write(JSON.stringify({ status: 'error', error: 'Google Sheet URL or Resume Link is required.' }) + '\n');
@@ -104,7 +104,12 @@ const handleAtsCheck = async (req, res) => {
 
     const { processAtsCheck } = require('../services/screeningService');
     const outcome = await processAtsCheck(
-      { sheetUrl, resumeUrl },
+      {
+        sheetUrl,
+        masterSheetUrl: masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || '',
+        resumeUrl,
+        operationName: operationName || ''
+      },
       (progressData) => {
         try {
           res.write(JSON.stringify(progressData) + '\n');
