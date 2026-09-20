@@ -53,7 +53,7 @@ function calculateScore(matchingResults, atsResults) {
 
   // 5. Categorization based on exact percentage brackets
   let category = 'Reject';
-  if (finalScore >= 90) {
+  if (finalScore >= 85) {
     category = 'Good to Go';
   } else if (finalScore >= 70) {
     category = 'Waiting List';
