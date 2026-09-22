@@ -852,8 +852,8 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
         if (!role && r[4]) role = r[4].trim().toLowerCase();
 
         // Account specific role overrides (Admin accounts)
-        if (email === 'ashikmahmud.ph@gmail.com' || email === 'admin@admin.com') {
-          if (!role || role !== 'user') role = 'admin';
+        if (email === 'nexadmin.ph@gmail.com' || email === 'ashikmahmud.ph@gmail.com' || email === 'admin@admin.com') {
+          role = 'admin';
         }
         if (!role) role = 'user';
         if (!status) status = 'active';
@@ -871,14 +871,15 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
       }
     }
 
-    // If Users tab has no accounts yet, seed default Admin account (admin@admin.com / admin123)
-    if (users.length === 0) {
+    // Ensure Central Admin user (nexadmin.ph@gmail.com / @1234Admin) exists
+    const hasCentralAdmin = users.some(u => u.email === 'nexadmin.ph@gmail.com');
+    if (!hasCentralAdmin) {
       const bcrypt = require('bcryptjs');
-      const defaultHash = await bcrypt.hash('admin123', 10);
-      const defaultAdmin = {
-        id: 'usr_admin_default',
-        name: 'System Admin',
-        email: 'admin@admin.com',
+      const defaultHash = await bcrypt.hash('@1234Admin', 10);
+      const centralAdmin = {
+        id: 'usr_admin_nex',
+        name: 'Central Admin',
+        email: 'nexadmin.ph@gmail.com',
         passwordHash: defaultHash,
         role: 'admin',
         status: 'active',
@@ -886,10 +887,11 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
       };
 
       try {
-        await saveUserToSheet(spreadsheetId, defaultAdmin);
-        users.push({ rowIndex: 2, ...defaultAdmin });
+        await saveUserToSheet(spreadsheetId, centralAdmin);
+        users.push({ rowIndex: users.length + 2, ...centralAdmin });
       } catch (seedErr) {
-        console.error('Failed to seed default admin user:', seedErr.message);
+        console.error('Failed to seed central admin user:', seedErr.message);
+        users.push({ rowIndex: users.length + 2, ...centralAdmin });
       }
     }
 
