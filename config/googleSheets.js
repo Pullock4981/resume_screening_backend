@@ -177,10 +177,10 @@ async function getSheetData(sheetUrlOrId) {
   const headers = rows[0].map(h => h ? h.trim() : '');
 
   // Find column indices (case-insensitive & flexible)
-  const nameIdx = headers.findIndex(h => /name|candidate|applicant|student/i.test(h));
+  const nameIdx = headers.findIndex(h => /name|candidate|applicant|student|username/i.test(h));
   const emailIdx = headers.findIndex(h => /email|mail/i.test(h));
   const phoneIdx = headers.findIndex(h => /phone|mobile|contact|num/i.test(h));
-  const resumeIdx = headers.findIndex(h => /resume|cv|link|url|drive|file/i.test(h));
+  const resumeIdx = headers.findIndex(h => /github|git|profile|submission|link|url|drive|file|resume|cv/i.test(h));
 
   // Required output headers
   const requiredOutputHeaders = [
@@ -231,20 +231,38 @@ async function getSheetData(sheetUrlOrId) {
     const row = rows[i];
     if (!row || row.length === 0) continue;
 
+    // Check if row has any non-empty content
+    const hasAnyContent = row.some(cell => cell && cell.toString().trim().length > 0);
+    if (!hasAnyContent) continue;
+
     const email = emailIdx !== -1 && row[emailIdx] ? row[emailIdx].trim() : '';
     const phone = phoneIdx !== -1 && row[phoneIdx] ? row[phoneIdx].trim() : '';
-    const resumeLink = resumeIdx !== -1 && row[resumeIdx] ? row[resumeIdx].trim() : '';
+    let resumeLink = resumeIdx !== -1 && row[resumeIdx] ? row[resumeIdx].trim() : '';
 
-    // Ignore completely empty rows where there is no resume link or email
-    if (!resumeLink && !email) continue;
-
-    // Deduplication key (lowercase email or resume link)
-    const dedupKey = (email ? email : resumeLink).toLowerCase().trim();
-    if (seenKeys.has(dedupKey)) {
-      console.log(`Skipping duplicate candidate row ${i + 1}: ${dedupKey}`);
-      continue;
+    // Fallback: search row for any URL or github handle if column missed
+    if (!resumeLink) {
+      const cellWithUrl = row.find(cell => cell && typeof cell === 'string' && (cell.includes('http') || cell.includes('github') || cell.includes('@')));
+      if (cellWithUrl) resumeLink = cellWithUrl.trim();
     }
-    seenKeys.add(dedupKey);
+
+    // Smart deduplication: Only deduplicate on valid unique emails or unique specific URLs
+    const isRealEmail = email && email.includes('@') && email.includes('.');
+    const isRealUrl = resumeLink && (resumeLink.startsWith('http') || resumeLink.includes('github.com/')) && !/n\/a|none|null|undefined|^https?:\/\/github\.com\/?$/i.test(resumeLink);
+
+    let dedupKey = null;
+    if (isRealEmail) {
+      dedupKey = `email:${email.toLowerCase().trim()}`;
+    } else if (isRealUrl) {
+      dedupKey = `url:${resumeLink.toLowerCase().trim()}`;
+    }
+
+    if (dedupKey) {
+      if (seenKeys.has(dedupKey)) {
+        console.log(`Skipping duplicate candidate row ${i + 1}: ${dedupKey}`);
+        continue;
+      }
+      seenKeys.add(dedupKey);
+    }
 
     // Derive name if missing
     let name = nameIdx !== -1 && row[nameIdx] ? row[nameIdx].trim() : '';
