@@ -189,7 +189,9 @@ async function getSheetData(sheetUrlOrId) {
     'Final Score (%)',
     'Category',
     'Critical Flag',
-    'Feedback Summary'
+    'Feedback Summary',
+    'GitHub Present Items (কী কী আছে)',
+    'GitHub Missing Items (কী কী নাই)'
   ];
 
   // Ensure output headers exist
@@ -287,6 +289,12 @@ async function updateCandidateResult(spreadsheetId, sheetName, colMap, rowIndex,
     { col: 'Critical Flag', value: result.criticalFlag ? 'CRITICAL MISSING' : 'OK' },
     { col: 'Feedback Summary', value: result.feedback }
   ];
+  if (result.presentItems !== undefined) {
+    updates.push({ col: 'GitHub Present Items (কী কী আছে)', value: result.presentItems });
+  }
+  if (result.missingItems !== undefined) {
+    updates.push({ col: 'GitHub Missing Items (কী কী নাই)', value: result.missingItems });
+  }
 
   const validColIndices = updates
     .map(u => colMap[u.col])
@@ -337,6 +345,12 @@ async function batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, upd
       { col: 'Critical Flag', value: result.criticalFlag ? 'CRITICAL MISSING' : 'OK' },
       { col: 'Feedback Summary', value: result.feedback }
     ];
+    if (result.presentItems !== undefined) {
+      updates.push({ col: 'GitHub Present Items (কী কী আছে)', value: result.presentItems });
+    }
+    if (result.missingItems !== undefined) {
+      updates.push({ col: 'GitHub Missing Items (কী কী নাই)', value: result.missingItems });
+    }
 
     const validColIndices = updates
       .map(u => colMap[u.col])
@@ -520,8 +534,6 @@ async function writeBatchToMasterDatabase(masterSheetUrl, operationName, results
 
     // 3. Prepare headers & candidate rows
     // 3. Prepare headers & candidate rows sorted by finalScore descending
-    const sortedResults = [...results].sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
-
     const headers = [
       'Candidate Name',
       'Email',
@@ -532,7 +544,9 @@ async function writeBatchToMasterDatabase(masterSheetUrl, operationName, results
       'Final Score (%)',
       'Category',
       'Critical Flag',
-      'Feedback Summary'
+      'Feedback Summary',
+      'GitHub Present Items (কী কী আছে)',
+      'GitHub Missing Items (কী কী নাই)'
     ];
 
     const rowsData = [
@@ -547,7 +561,9 @@ async function writeBatchToMasterDatabase(masterSheetUrl, operationName, results
         r.finalScore || 0,
         r.category || '',
         r.criticalFlag ? 'CRITICAL MISSING' : 'OK',
-        r.feedback || ''
+        r.feedback || '',
+        r.presentItems || '',
+        r.missingItems || ''
       ])
     ];
 
@@ -667,6 +683,9 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
         continue; // TAB WAS DELETED IN GOOGLE SHEET! SKIP IT!
       }
 
+      const isGithub = /github/i.test(operationName) || /^gh_/i.test(tabName);
+      const isAts = /ats/i.test(operationName);
+
       let candidates = [];
       if (tabName && existingSheetTitles.includes(tabName)) {
         try {
@@ -678,46 +697,104 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
           const tabRows = tabRes.data.values;
           if (tabRows && tabRows.length > 1) {
             const tabHeaders = tabRows[0].map(h => h ? h.trim() : '');
-            const nameIdx = tabHeaders.findIndex(h => /name|candidate/i.test(h));
-            const emailIdx = tabHeaders.findIndex(h => /email|mail/i.test(h));
-            const phoneIdx = tabHeaders.findIndex(h => /phone|mobile/i.test(h));
-            const resumeIdx = tabHeaders.findIndex(h => /resume|cv|link/i.test(h));
-            const matchIdx = tabHeaders.findIndex(h => /match/i.test(h));
-            const atsIdx = tabHeaders.findIndex(h => /ats/i.test(h));
-            const finalIdx = tabHeaders.findIndex(h => /final/i.test(h));
-            const catIdx = tabHeaders.findIndex(h => /category/i.test(h));
-            const critIdx = tabHeaders.findIndex(h => /critical/i.test(h));
-            const feedIdx = tabHeaders.findIndex(h => /feedback/i.test(h));
 
-            for (let r = 1; r < tabRows.length; r++) {
-              const tr = tabRows[r];
-              if (!tr || tr.length === 0) continue;
+            if (isGithub) {
+              const nameIdx = tabHeaders.findIndex(h => /name|username|candidate/i.test(h));
+              const urlIdx = tabHeaders.findIndex(h => /url|profile/i.test(h));
+              const scoreIdx = tabHeaders.findIndex(h => /total score|score/i.test(h));
+              const pctIdx = tabHeaders.findIndex(h => /percentage|pct|%/i.test(h));
+              const gradeIdx = tabHeaders.findIndex(h => /grade|status/i.test(h));
+              const reposIdx = tabHeaders.findIndex(h => /repos/i.test(h));
+              const follIdx = tabHeaders.findIndex(h => /followers/i.test(h));
+              const emailIdx = tabHeaders.findIndex(h => /email|checked by/i.test(h));
+              const presentIdx = tabHeaders.findIndex(h => /present|কী কী আছে/i.test(h));
+              const missingIdx = tabHeaders.findIndex(h => /missing|কী কী নাই/i.test(h));
 
-              const name = nameIdx !== -1 && tr[nameIdx] ? tr[nameIdx] : `Candidate #${r}`;
-              const email = emailIdx !== -1 && tr[emailIdx] ? tr[emailIdx] : '';
-              const phone = phoneIdx !== -1 && tr[phoneIdx] ? tr[phoneIdx] : 'N/A';
-              const resumeLink = resumeIdx !== -1 && tr[resumeIdx] ? tr[resumeIdx] : '';
-              const matchScore = matchIdx !== -1 ? parseInt(tr[matchIdx]) || 0 : 0;
-              const atsScore = atsIdx !== -1 ? parseInt(tr[atsIdx]) || 0 : 0;
-              const finalScore = finalIdx !== -1 ? parseInt(tr[finalIdx]) || 0 : 0;
-              const category = catIdx !== -1 && tr[catIdx] ? tr[catIdx] : '';
-              const criticalFlag = critIdx !== -1 && tr[critIdx] ? /missing/i.test(tr[critIdx]) : false;
-              const feedback = feedIdx !== -1 && tr[feedIdx] ? tr[feedIdx] : '';
+              for (let r = 1; r < tabRows.length; r++) {
+                const tr = tabRows[r];
+                if (!tr || tr.length === 0) continue;
 
-              candidates.push({
-                name,
-                email,
-                phone,
-                resumeLink,
-                matchScore,
-                atsScore,
-                finalScore,
-                category,
-                criticalFlag,
-                feedback,
-                atsDetails: { warnings: [] },
-                matchingResults: { mustHaveResults: [], niceToHaveResults: [], criticalMissing: [] }
-              });
+                const name = nameIdx !== -1 && tr[nameIdx] ? tr[nameIdx] : `Candidate #${r}`;
+                const profileUrl = urlIdx !== -1 && tr[urlIdx] ? tr[urlIdx] : '';
+                const totalScore = scoreIdx !== -1 ? parseInt(tr[scoreIdx]) || 0 : 0;
+                const percentage = pctIdx !== -1 ? parseInt(tr[pctIdx]) || 0 : Math.round((totalScore / 60) * 100);
+                const grade = gradeIdx !== -1 && tr[gradeIdx] ? tr[gradeIdx] : (totalScore >= 50 ? 'Excellent Profile' : totalScore >= 40 ? 'Strong Profile' : totalScore >= 30 ? 'Moderate Profile' : 'Needs Improvement');
+                const publicRepos = reposIdx !== -1 ? parseInt(tr[reposIdx]) || 0 : 0;
+                const followers = follIdx !== -1 ? parseInt(tr[follIdx]) || 0 : 0;
+                const email = emailIdx !== -1 && tr[emailIdx] ? tr[emailIdx] : 'N/A';
+                const presentItems = presentIdx !== -1 && tr[presentIdx] ? tr[presentIdx] : '';
+                const missingItems = missingIdx !== -1 && tr[missingIdx] ? tr[missingIdx] : '';
+
+                candidates.push({
+                  username: name,
+                  name,
+                  email,
+                  avatarUrl: '',
+                  profileUrl,
+                  bio: '',
+                  location: '',
+                  publicRepos,
+                  followers,
+                  following: 0,
+                  totalScore,
+                  maxScore: 60,
+                  percentage,
+                  grade,
+                  gradeColor: totalScore >= 50 ? 'emerald' : totalScore >= 40 ? 'cyan' : totalScore >= 30 ? 'amber' : 'rose',
+                  presentItems,
+                  missingItems,
+                  breakdown: [],
+                  topRepos: []
+                });
+              }
+            } else {
+              const nameIdx = tabHeaders.findIndex(h => /name|candidate/i.test(h));
+              const emailIdx = tabHeaders.findIndex(h => /email|mail/i.test(h));
+              const phoneIdx = tabHeaders.findIndex(h => /phone|mobile/i.test(h));
+              const resumeIdx = tabHeaders.findIndex(h => /resume|cv|link/i.test(h));
+              const matchIdx = tabHeaders.findIndex(h => /match/i.test(h));
+              const atsIdx = tabHeaders.findIndex(h => /ats/i.test(h));
+              const finalIdx = tabHeaders.findIndex(h => /final/i.test(h));
+              const catIdx = tabHeaders.findIndex(h => /category/i.test(h));
+              const critIdx = tabHeaders.findIndex(h => /critical/i.test(h));
+              const feedIdx = tabHeaders.findIndex(h => /feedback/i.test(h));
+              const presentIdx = tabHeaders.findIndex(h => /present|কী কী আছে/i.test(h));
+              const missingIdx = tabHeaders.findIndex(h => /missing|কী কী নাই/i.test(h));
+
+              for (let r = 1; r < tabRows.length; r++) {
+                const tr = tabRows[r];
+                if (!tr || tr.length === 0) continue;
+
+                const name = nameIdx !== -1 && tr[nameIdx] ? tr[nameIdx] : `Candidate #${r}`;
+                const email = emailIdx !== -1 && tr[emailIdx] ? tr[emailIdx] : '';
+                const phone = phoneIdx !== -1 && tr[phoneIdx] ? tr[phoneIdx] : 'N/A';
+                const resumeLink = resumeIdx !== -1 && tr[resumeIdx] ? tr[resumeIdx] : '';
+                const matchScore = matchIdx !== -1 ? parseInt(tr[matchIdx]) || 0 : 0;
+                const atsScore = atsIdx !== -1 ? parseInt(tr[atsIdx]) || 0 : 0;
+                const finalScore = finalIdx !== -1 ? parseInt(tr[finalIdx]) || 0 : 0;
+                const category = catIdx !== -1 && tr[catIdx] ? tr[catIdx] : '';
+                const criticalFlag = critIdx !== -1 && tr[critIdx] ? /missing/i.test(tr[critIdx]) : false;
+                const feedback = feedIdx !== -1 && tr[feedIdx] ? tr[feedIdx] : '';
+                const presentItems = presentIdx !== -1 && tr[presentIdx] ? tr[presentIdx] : '';
+                const missingItems = missingIdx !== -1 && tr[missingIdx] ? tr[missingIdx] : '';
+
+                candidates.push({
+                  name,
+                  email,
+                  phone,
+                  resumeLink,
+                  matchScore,
+                  atsScore,
+                  finalScore,
+                  category,
+                  criticalFlag,
+                  feedback,
+                  presentItems,
+                  missingItems,
+                  atsDetails: { warnings: [] },
+                  matchingResults: { mustHaveResults: [], niceToHaveResults: [], criticalMissing: [] }
+                });
+              }
             }
           }
         } catch (e) {
@@ -725,24 +802,48 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
         }
       }
 
-      const notMatchingCount = Math.max(0, (candidates.length || totalCandidates) - (goodToGoCount + waitingListCount));
+      if (isGithub) {
+        const excellentCount = candidates.filter(c => (c.totalScore || 0) >= 50).length;
+        const strongCount = candidates.filter(c => (c.totalScore || 0) >= 40 && (c.totalScore || 0) < 50).length;
+        const moderateCount = candidates.filter(c => (c.totalScore || 0) >= 30 && (c.totalScore || 0) < 40).length;
+        const needsImprovementCount = candidates.filter(c => (c.totalScore || 0) < 30).length;
 
-      historyRecords.push({
-        id: `gs_${i}_${tabName || operationName}`,
-        operationName,
-        timestamp: new Date().toISOString(),
-        dateFormatted,
-        studentSheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
-        totalCandidates: candidates.length || totalCandidates,
-        goodToGoCount: candidates.length ? candidates.filter(c => c.finalScore >= 80).length : goodToGoCount,
-        waitingListCount: candidates.length ? candidates.filter(c => c.finalScore >= 70 && c.finalScore < 80).length : waitingListCount,
-        notMatchingCount: candidates.length ? candidates.filter(c => c.finalScore < 70).length : notMatchingCount,
-        candidates
-      });
+        historyRecords.push({
+          id: `gh_gs_${i}_${tabName || operationName}`,
+          type: 'github',
+          operationName,
+          timestamp: new Date().toISOString(),
+          dateFormatted,
+          studentSheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+          totalCandidates: candidates.length || totalCandidates,
+          excellentCount,
+          strongCount,
+          moderateCount,
+          needsImprovementCount,
+          results: candidates
+        });
+      } else {
+        const notMatchingCount = Math.max(0, (candidates.length || totalCandidates) - (goodToGoCount + waitingListCount));
+
+        historyRecords.push({
+          id: `gs_${i}_${tabName || operationName}`,
+          type: isAts ? 'ats' : 'screening',
+          operationName,
+          timestamp: new Date().toISOString(),
+          dateFormatted,
+          studentSheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+          totalCandidates: candidates.length || totalCandidates,
+          goodToGoCount: candidates.length ? candidates.filter(c => c.finalScore >= 80).length : goodToGoCount,
+          waitingListCount: candidates.length ? candidates.filter(c => c.finalScore >= 70 && c.finalScore < 80).length : waitingListCount,
+          notMatchingCount: candidates.length ? candidates.filter(c => c.finalScore < 70).length : notMatchingCount,
+          candidates
+        });
+      }
     }
 
     return historyRecords;
   } catch (err) {
+
     console.error('Failed to fetch master history from Google Sheets:', err.message);
     return [];
   }
@@ -1058,6 +1159,104 @@ async function getLoginLogsFromSheet(masterSheetUrlOrId) {
   }
 }
 
+/**
+ * Write full GitHub check batch results to Master Database Spreadsheet
+ */
+async function saveGithubCheckToSheet(masterSheetUrlOrId, operationName, results, userEmail) {
+  const masterSpreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
+  if (!masterSpreadsheetId) return;
+
+  const sheets = getGoogleSheetsClient();
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const cleanTitle = `GH_${(operationName || dateStr).replace(/[^a-zA-Z0-9_\- ]/g, '').slice(0, 20)}`;
+  let targetTabName = cleanTitle;
+
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: masterSpreadsheetId });
+    const existingTitles = meta.data.sheets.map(s => s.properties.title);
+
+    let counter = 1;
+    while (existingTitles.includes(targetTabName)) {
+      targetTabName = `${cleanTitle.slice(0, 15)}_${counter++}`;
+    }
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: masterSpreadsheetId,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: targetTabName } } }]
+      }
+    });
+
+    const headers = [
+      'Candidate Name / Username',
+      'GitHub Profile URL',
+      'Total Score (out of 60)',
+      'Percentage (%)',
+      'Grade / Status',
+      'Public Repos',
+      'Followers',
+      'Checked By Email',
+      'Checked At',
+      'GitHub Present Items (কী কী আছে)',
+      'GitHub Missing Items (কী কী নাই)'
+    ];
+
+    const sortedResults = [...results].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+
+    const timeFormatted = new Date().toLocaleString('en-US', {
+      timeZone: 'Asia/Dhaka',
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    });
+
+    const rowsData = [
+      headers,
+      ...sortedResults.map(r => {
+        const passedList = (r.breakdown || []).filter(b => b.passed);
+        const missingList = (r.breakdown || []).filter(b => !b.passed);
+
+        const presentStr = r.presentItems || (passedList.length > 0 
+          ? passedList.map((b, idx) => `• ${b.title || b.criterion} (+${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
+          : 'None');
+        const missingStr = r.missingItems || (missingList.length > 0 
+          ? missingList.map((b, idx) => `• ${b.title || b.criterion} (${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
+          : '🎉 Everything Present (0 Missing)');
+
+        return [
+          r.name || r.username || '',
+          r.profileUrl || '',
+          r.totalScore || 0,
+          r.percentage || 0,
+          r.grade || '',
+          r.publicRepos || 0,
+          r.followers || 0,
+          userEmail || 'N/A',
+          timeFormatted,
+          presentStr,
+          missingStr
+        ];
+      })
+    ];
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: masterSpreadsheetId,
+      range: `${targetTabName}!A1`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: rowsData }
+    });
+
+    await logOperationToMasterSheet(
+      masterSpreadsheetId,
+      `[GitHub Check] ${operationName || targetTabName} (by ${userEmail || 'User'})`,
+      targetTabName,
+      results.length,
+      sortedResults.map(r => ({ finalScore: r.percentage }))
+    );
+  } catch (err) {
+    console.error('Failed to save GitHub check to Google Sheet:', err.message);
+  }
+}
+
 module.exports = {
   extractSpreadsheetId,
   getSheetData,
@@ -1072,6 +1271,8 @@ module.exports = {
   saveUserToSheet,
   updateUserInSheet,
   logUserLoginToSheet,
-  getLoginLogsFromSheet
+  getLoginLogsFromSheet,
+  saveGithubCheckToSheet
 };
+
 

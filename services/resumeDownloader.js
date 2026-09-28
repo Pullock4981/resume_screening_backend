@@ -26,7 +26,7 @@ async function fetchResumeText(resumeUrl) {
   try {
     const response = await axios.get(downloadUrl, {
       responseType: 'arraybuffer',
-      timeout: 5000,
+      timeout: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
       }
@@ -48,16 +48,17 @@ async function fetchResumeText(resumeUrl) {
         return pdfData.text;
       }
     } catch (err) {
-      // Fallback: try reading as plain UTF-8 string
       const plainText = buffer.toString('utf-8');
-      if (plainText.length > 50) return plainText;
-      throw err;
+      if (plainText.length > 50 && !plainText.includes('<!DOCTYPE html>')) return plainText;
+      throw new Error('Resume file format is unreadable or not a valid PDF/DOCX document.');
     }
 
     return buffer.toString('utf-8');
   } catch (error) {
-    throw new Error(`Failed to fetch or parse resume from link (${resumeUrl}): ${error.message}`);
+    const cleanMsg = error.response ? `HTTP ${error.response.status}` : error.message;
+    throw new Error(`Unable to fetch resume from link. Ensure the file is publicly viewable. Details: ${cleanMsg}`);
   }
+
 }
 
 module.exports = {

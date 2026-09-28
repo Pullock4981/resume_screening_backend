@@ -161,11 +161,70 @@ const handleGetActivityLogs = async (req, res) => {
   }
 };
 
+const handleGithubCheck = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
+  try {
+    const { sheetUrl, masterSheetUrl, githubUrl, operationName } = req.body || {};
+
+    if (!sheetUrl && !githubUrl) {
+      res.write(JSON.stringify({ status: 'error', error: 'Google Sheet URL or GitHub Profile URL is required.' }) + '\n');
+      return res.end();
+    }
+
+    const { processGithubCheck } = require('../services/screeningService');
+    const userEmail = req.user ? req.user.email : (req.body.email || 'user@system.com');
+
+    const outcome = await processGithubCheck(
+      {
+        sheetUrl,
+        masterSheetUrl: masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || '',
+        githubUrl,
+        operationName: operationName || ''
+      },
+      userEmail,
+      (progressData) => {
+        try {
+          res.write(JSON.stringify(progressData) + '\n');
+        } catch (e) {}
+      }
+    );
+
+    // Also audit log this activity
+    try {
+      await logUserLoginToSheet(null, {
+        email: userEmail,
+        role: req.user ? req.user.role : 'user',
+        details: `GitHub Check Executed (${outcome.total} candidate profiles processed)`
+      });
+    } catch (auditErr) {}
+
+    res.write(JSON.stringify({ status: 'completed', data: outcome }) + '\n');
+    res.end();
+  } catch (error) {
+    console.error('GitHub Check Error:', error);
+    try {
+      res.write(JSON.stringify({ status: 'error', error: error.message || 'GitHub Profile Evaluation failed.' }) + '\n');
+      res.end();
+    } catch (e) {}
+  }
+};
+
 module.exports = {
   handleScreening,
   handleSSEProgress,
   handleGetHistory,
   handleAtsCheck,
   handleLogActivity,
-  handleGetActivityLogs
+  handleGetActivityLogs,
+  handleGithubCheck
 };
+

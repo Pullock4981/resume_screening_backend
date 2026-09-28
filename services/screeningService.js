@@ -311,7 +311,208 @@ async function processAtsCheck({ sheetUrl, masterSheetUrl, resumeUrl, operationN
   throw new Error('Please provide either a Candidate Google Sheet URL or a Direct Resume Link.');
 }
 
+async function processGithubCheck({ sheetUrl, masterSheetUrl, githubUrl, operationName = '' }, userEmail, onProgress) {
+  const { evaluateGithubProfile, extractGithubUsername } = require('../engine/githubChecker');
+  const { saveGithubCheckToSheet } = require('../config/googleSheets');
+
+  // Case 1: Google Sheet URL provided
+  if (sheetUrl && sheetUrl.trim().length > 0) {
+    const sheetInfo = await getSheetData(sheetUrl);
+    const { spreadsheetId, sheetName, colMap, candidates } = sheetInfo;
+
+    if (!candidates || candidates.length === 0) {
+      throw new Error('No candidate rows found in the Google Sheet.');
+    }
+
+    const total = candidates.length;
+    const results = [];
+
+    if (onProgress) {
+      onProgress({ completed: 0, total, status: 'started' });
+    }
+
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+
+      // Small delay between candidate scans to prevent API rate limit bursts
+      if (i > 0) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+
+      // Find GitHub URL from candidate fields or raw row
+      let targetGithub = '';
+      const candidateValues = Object.values(candidate.rawRowData || {}).join(' ');
+      const ghMatch = candidateValues.match(/github\.com\/([a-zA-Z0-9_-]+)/i);
+
+      if (ghMatch) {
+        targetGithub = `https://github.com/${ghMatch[1]}`;
+      } else if (candidate.resumeLink && candidate.resumeLink.includes('github.com')) {
+        targetGithub = candidate.resumeLink;
+      } else {
+        const handleMatch = candidateValues.match(/@([a-zA-Z0-9_-]{3,39})/);
+        if (handleMatch) {
+          targetGithub = handleMatch[1];
+        }
+      }
+
+      let evalResult = null;
+      if (!targetGithub) {
+        evalResult = {
+          username: candidate.name || 'N/A',
+          name: candidate.name || 'Candidate',
+          avatarUrl: '',
+          profileUrl: '#',
+          bio: '',
+          location: '',
+          publicRepos: 0,
+          followers: 0,
+          following: 0,
+          totalScore: 0,
+          maxScore: 60,
+          percentage: 0,
+          grade: 'No GitHub Link',
+          gradeColor: 'rose',
+          breakdown: [{ title: 'GitHub Link Missing', score: 0, maxScore: 60, passed: false, detail: 'No GitHub profile URL or @username provided in candidate Google Sheet row.' }],
+          topRepos: []
+        };
+      } else {
+        try {
+          evalResult = await evaluateGithubProfile(targetGithub);
+        } catch (err) {
+          const isRateLimit = err.message && err.message.includes('Rate Limit');
+          evalResult = {
+            username: extractGithubUsername(targetGithub) || candidate.name || 'Unknown',
+            name: candidate.name || 'Unknown',
+            avatarUrl: '',
+            profileUrl: targetGithub || '#',
+            bio: '',
+            location: '',
+            publicRepos: 0,
+            followers: 0,
+            following: 0,
+            totalScore: 0,
+            maxScore: 60,
+            percentage: 0,
+            grade: isRateLimit ? 'Rate Limited' : 'Needs Improvement',
+            gradeColor: 'rose',
+            breakdown: [{ title: isRateLimit ? 'GitHub Rate Limit' : 'Profile Error', score: 0, maxScore: 60, passed: false, detail: err.message }],
+            topRepos: []
+          };
+        }
+      }
+
+      const passedList = (evalResult.breakdown || []).filter(b => b.passed);
+      const missingList = (evalResult.breakdown || []).filter(b => !b.passed);
+
+      const presentItemsStr = passedList.length > 0 
+        ? passedList.map((b, idx) => `• ${b.title || b.criterion} (+${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
+        : 'None';
+      const missingItemsStr = missingList.length > 0 
+        ? missingList.map((b, idx) => `• ${b.title || b.criterion} (${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
+        : '🎉 Everything Present (0 Missing)';
+
+      const item = {
+        ...evalResult,
+        name: candidate.name || evalResult.name,
+        email: candidate.email || 'N/A',
+        phone: candidate.phone || 'N/A',
+        presentItems: presentItemsStr,
+        missingItems: missingItemsStr
+      };
+      results.push(item);
+
+      if (onProgress) {
+        onProgress({
+          completed: i + 1,
+          total,
+          currentCandidate: item.name,
+          result: item,
+          status: 'processing'
+        });
+      }
+    }
+
+    // Batch Update candidate results back into Candidate Google Sheet
+    const updateItems = [];
+    candidates.forEach((candidate, cIdx) => {
+      const item = results[cIdx];
+      if (item) {
+        updateItems.push({
+          rowIndex: candidate.rowIndex,
+          result: {
+            matchScore: item.totalScore,
+            atsScore: item.percentage,
+            finalScore: item.percentage,
+            category: item.grade,
+            criticalFlag: item.totalScore < 30,
+            feedback: `GitHub Check (${item.totalScore}/60 Marks - ${item.grade}). ${item.publicRepos} Repos, ${item.followers} Followers. Profile: ${item.profileUrl}`,
+            presentItems: item.presentItems,
+            missingItems: item.missingItems
+          }
+        });
+      }
+    });
+
+    try {
+      await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, updateItems);
+      await sortSheetByFinalScore(spreadsheetId, sheetName, colMap);
+    } catch (writeErr) {
+      console.error('Failed to update candidate Google Sheet with GitHub results:', writeErr.message);
+    }
+
+    // Save batch to Master Central Google Sheet
+    const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || sheetUrl;
+    const opName = operationName || `Github_Check_${sheetName}`;
+    try {
+      await saveGithubCheckToSheet(targetMasterUrl, opName, results, userEmail);
+    } catch (sheetErr) {
+      console.error('Failed to save GitHub Check batch to master sheet:', sheetErr.message);
+    }
+
+    return { total, results };
+
+  }
+
+  // Case 2: Single GitHub URL / Username provided
+  if (githubUrl && githubUrl.trim().length > 0) {
+    const evalResult = await evaluateGithubProfile(githubUrl.trim());
+    const passedList = (evalResult.breakdown || []).filter(b => b.passed);
+    const missingList = (evalResult.breakdown || []).filter(b => !b.passed);
+
+    const presentItemsStr = passedList.length > 0 
+      ? passedList.map((b, idx) => `• ${b.title || b.criterion} (+${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
+      : 'None';
+    const missingItemsStr = missingList.length > 0 
+      ? missingList.map((b, idx) => `• ${b.title || b.criterion} (${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
+      : '🎉 Everything Present (0 Missing)';
+
+    const singleItem = {
+      ...evalResult,
+      email: 'N/A',
+      phone: 'N/A',
+      presentItems: presentItemsStr,
+      missingItems: missingItemsStr
+    };
+
+    const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL;
+    if (targetMasterUrl) {
+      try {
+        const opName = operationName || `Github_Check_${evalResult.username}`;
+        await saveGithubCheckToSheet(targetMasterUrl, opName, [singleItem], userEmail);
+      } catch (err) {
+        console.error('Failed to save single GitHub Check to sheet:', err.message);
+      }
+    }
+
+    return { total: 1, results: [singleItem] };
+  }
+
+  throw new Error('Please provide either a Candidate Google Sheet URL or a Direct GitHub URL / Username.');
+}
+
 module.exports = {
   processScreening,
-  processAtsCheck
+  processAtsCheck,
+  processGithubCheck
 };
+
