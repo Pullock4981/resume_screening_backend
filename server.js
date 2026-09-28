@@ -29,9 +29,12 @@ app.get('/health', (req, res) => {
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`🚀 Resume Screening Backend Server listening on port ${PORT}`);
   });
+  server.setTimeout(0);
+  server.keepAliveTimeout = 600000;
+  server.headersTimeout = 600000;
 }
 
 module.exports = app;
