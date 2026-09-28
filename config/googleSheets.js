@@ -150,7 +150,7 @@ async function getSheetData(sheetUrlOrId) {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `'${sheetName}'!A1:Z1000`,
+      range: `'${sheetName}'!A1:Z10000`,
     });
 
     rows = response.data.values || [];
@@ -691,7 +691,7 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
         try {
           const tabRes = await sheets.spreadsheets.values.get({
             spreadsheetId,
-            range: `${tabName}!A1:Z1000`
+            range: `${tabName}!A1:Z10000`
           });
 
           const tabRows = tabRes.data.values;
@@ -913,7 +913,7 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
 
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'Users!A1:G1000'
+      range: 'Users!A1:G10000'
     });
 
     const rows = res.data.values || [];
@@ -1132,7 +1132,7 @@ async function getLoginLogsFromSheet(masterSheetUrlOrId) {
 
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'Login_Logs!A1:E1000'
+      range: 'Login_Logs!A1:E10000'
     });
 
     const rows = res.data.values;

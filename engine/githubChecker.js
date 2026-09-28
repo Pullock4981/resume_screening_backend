@@ -24,6 +24,28 @@ function extractGithubUsername(input) {
   return /^[a-zA-Z0-9_-]+$/.test(cleaned) ? cleaned : null;
 }
 
+async function fetchWithRetry(url, options = {}, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 403 || res.status === 429) {
+        if (attempt < maxRetries) {
+          console.warn(`[GitHub API] Rate limit hit (Status ${res.status}). Retrying attempt ${attempt + 1}/${maxRetries} in ${attempt * 3} seconds...`);
+          await new Promise(r => setTimeout(r, attempt * 3000));
+          continue;
+        }
+      }
+      return res;
+    } catch (err) {
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, attempt * 2000));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function fetchGithubData(username) {
   const headers = {
     'User-Agent': 'NexScanner-Github-Checker',
@@ -34,10 +56,10 @@ async function fetchGithubData(username) {
   }
 
   // 1. Fetch User Profile Data
-  const userRes = await fetch(`https://api.github.com/users/${username}`, { headers });
+  const userRes = await fetchWithRetry(`https://api.github.com/users/${username}`, { headers });
   if (userRes.status === 403 || userRes.status === 429) {
     const remaining = userRes.headers.get('x-ratelimit-remaining');
-    throw new Error(`GitHub API Rate Limit Exceeded (${remaining || 0} remaining). Please wait a few minutes or set GITHUB_TOKEN in backend/.env for 5,000 req/hr.`);
+    throw new Error(`GitHub API Rate Limit Exceeded (${remaining || 0} remaining). Please set GITHUB_TOKEN in backend/.env for 5,000 req/hr.`);
   }
   if (!userRes.ok) {
     throw new Error(`GitHub user '${username}' not found or profile inaccessible.`);
@@ -63,7 +85,7 @@ async function fetchGithubData(username) {
   // 3. Fetch Public Repositories (up to 30)
   let repos = [];
   try {
-    const reposRes = await fetch(`https://api.github.com/users/${username}/repos?sort=pushed&per_page=30`, { headers });
+    const reposRes = await fetchWithRetry(`https://api.github.com/users/${username}/repos?sort=pushed&per_page=30`, { headers });
     if (reposRes.ok) {
       repos = await reposRes.json();
       // Exclude profile readme repo from project repo counts

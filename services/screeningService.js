@@ -115,13 +115,14 @@ async function processScreening({ sheetUrl, masterSheetUrl, jdText, mustHave = [
         });
       }
     });
-  }
 
-  // Step 4: Fast Bulk Update to Candidate Google Sheet in ONE single API call!
-  try {
-    await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, updateItems);
-  } catch (writeErr) {
-    console.error('Failed to batch update Google Sheet:', writeErr.message);
+    // Save to Google Sheet incrementally per chunk (every 5 candidates)
+    try {
+      const chunkUpdates = chunkResults.map(cr => ({ rowIndex: cr.candidate.rowIndex, result: cr.resultItem }));
+      await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, chunkUpdates);
+    } catch (chunkErr) {
+      console.error('Incremental chunk save failed:', chunkErr.message);
+    }
   }
 
   // Step 5: Automatically sort candidate sheet rows by Final Score (%) in DESCENDING order!
@@ -430,34 +431,41 @@ async function processGithubCheck({ sheetUrl, masterSheetUrl, githubUrl, operati
           status: 'processing'
         });
       }
+      // Incremental periodic save to Google Sheet every 25 candidates
+      if ((i + 1) % 25 === 0 || i === candidates.length - 1) {
+        const pendingUpdates = [];
+        const startIdx = Math.max(0, Math.floor(i / 25) * 25);
+        for (let k = startIdx; k <= i; k++) {
+          const cand = candidates[k];
+          const resItem = results[k];
+          if (cand && resItem) {
+            pendingUpdates.push({
+              rowIndex: cand.rowIndex,
+              result: {
+                matchScore: resItem.totalScore,
+                atsScore: resItem.percentage,
+                finalScore: resItem.percentage,
+                category: resItem.grade,
+                criticalFlag: resItem.totalScore < 30,
+                feedback: `GitHub Check (${resItem.totalScore}/60 Marks - ${resItem.grade}). ${resItem.publicRepos} Repos, ${resItem.followers} Followers. Profile: ${resItem.profileUrl}`,
+                presentItems: resItem.presentItems,
+                missingItems: resItem.missingItems
+              }
+            });
+          }
+        }
+        try {
+          await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, pendingUpdates);
+        } catch (partialErr) {
+          console.error(`Incremental Google Sheet save failed at candidate ${i + 1}:`, partialErr.message);
+        }
+      }
     }
 
-    // Batch Update candidate results back into Candidate Google Sheet
-    const updateItems = [];
-    candidates.forEach((candidate, cIdx) => {
-      const item = results[cIdx];
-      if (item) {
-        updateItems.push({
-          rowIndex: candidate.rowIndex,
-          result: {
-            matchScore: item.totalScore,
-            atsScore: item.percentage,
-            finalScore: item.percentage,
-            category: item.grade,
-            criticalFlag: item.totalScore < 30,
-            feedback: `GitHub Check (${item.totalScore}/60 Marks - ${item.grade}). ${item.publicRepos} Repos, ${item.followers} Followers. Profile: ${item.profileUrl}`,
-            presentItems: item.presentItems,
-            missingItems: item.missingItems
-          }
-        });
-      }
-    });
-
     try {
-      await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, updateItems);
       await sortSheetByFinalScore(spreadsheetId, sheetName, colMap);
     } catch (writeErr) {
-      console.error('Failed to update candidate Google Sheet with GitHub results:', writeErr.message);
+      console.error('Failed to sort candidate Google Sheet:', writeErr.message);
     }
 
     // Save batch to Master Central Google Sheet
