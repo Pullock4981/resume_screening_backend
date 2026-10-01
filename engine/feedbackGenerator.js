@@ -2,7 +2,7 @@
  * Rule-Based Dynamic Feedback Text Generator (0% AI Tokens)
  */
 function generateFeedback(candidateName, scoreDetails, matchingResults, atsResults) {
-  const { finalScore, category, criticalFlag, criticalMissing } = scoreDetails;
+  const { finalScore, category, criticalFlag, criticalMissing, extraSkills = [], extraSkillsPenalty = 0 } = scoreDetails;
   const { mustHaveResults, niceToHaveResults } = matchingResults;
   const { atsScore, warnings } = atsResults;
 
@@ -33,24 +33,28 @@ function generateFeedback(candidateName, scoreDetails, matchingResults, atsResul
     summaryParts.push(`⚠️ Critical Missing Skill(s): ${criticalMissing.join(', ')}.`);
   }
 
-  // Matched vs Missing Skills breakdown text
+  // Build structured summary parts
   if (matchedMustHave.length > 0) {
-    summaryParts.push(`Matched Skills: ${matchedMustHave.join(', ')}.`);
+    summaryParts.push(`• Matched Required Skills: ${matchedMustHave.join(', ')}.`);
   }
-  if (missingMustHave.length > 0 && finalScore < 85) {
-    summaryParts.push(`Missing Skills: ${missingMustHave.join(', ')}.`);
+  if (missingMustHave.length > 0) {
+    summaryParts.push(`• Missing Required Skills: ${missingMustHave.join(', ')}.`);
   }
   if (matchedNiceToHave.length > 0) {
-    summaryParts.push(`Bonus Skills: ${matchedNiceToHave.join(', ')}.`);
+    summaryParts.push(`• Bonus / Nice-to-Have Skills: ${matchedNiceToHave.join(', ')}.`);
+  }
+  if (extraSkills && extraSkills.length > 0) {
+    summaryParts.push(`• Irrelevant / Extra Unrequested Skills (-${extraSkillsPenalty}% Penalty): ${extraSkills.join(', ')}.`);
   }
 
-  // ATS Formatting Note
-  summaryParts.push(`ATS Format Score: ${atsScore}%.`);
+  summaryParts.push(`• ATS Format Rating: ${atsScore}%.`);
   if (warnings && warnings.length > 0) {
-    summaryParts.push(`Formatting Notes: ${warnings.slice(0, 2).join(' ')}`);
+    warnings.slice(0, 2).forEach(w => {
+      summaryParts.push(`• Formatting Improvement: ${w}`);
+    });
   }
 
-  return summaryParts.join(' ');
+  return summaryParts.join('\n');
 }
 
 module.exports = {

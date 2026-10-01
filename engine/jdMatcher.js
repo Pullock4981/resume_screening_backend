@@ -253,12 +253,40 @@ function matchResumeToRequirements(resumeText, mustHaveSkills, niceToHaveSkills,
     .filter(r => r.status === 'Missing')
     .map(r => r.name);
 
+  // Detect Extra / Unrelated Skills not requested in Job Description
+  const requestedSkillKeys = new Set([
+    ...mustHaveSkills.map(s => normalizeSkillKey(s.name)),
+    ...niceToHaveSkills.map(s => normalizeSkillKey(s.name))
+  ]);
+
+  const extraSkillsFound = [];
+  if (skillsDict && Array.isArray(skillsDict.skills)) {
+    skillsDict.skills.forEach(dictSkill => {
+      const skillKey = normalizeSkillKey(dictSkill.name);
+      if (!requestedSkillKeys.has(skillKey)) {
+        const isPresent = dictSkill.aliases.some(alias => {
+          const regex = new RegExp(`\\b${escapeRegExp(alias)}\\b`, 'i');
+          return regex.test(resumeLower);
+        });
+        if (isPresent) {
+          extraSkillsFound.push(dictSkill.name);
+        }
+      }
+    });
+  }
+
+  const extraSkills = extraSkillsFound.slice(0, 8);
+  // Penalty calculation: 2% per 2 extra unrequested skills (max 10% penalty)
+  const extraSkillsPenalty = Math.min(10, Math.floor(extraSkillsFound.length / 2) * 2);
+
   return {
     candidateExp,
     minExperience,
     mustHaveResults,
     niceToHaveResults,
-    criticalMissing
+    criticalMissing,
+    extraSkills,
+    extraSkillsPenalty
   };
 }
 

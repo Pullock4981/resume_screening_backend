@@ -2,7 +2,7 @@
  * Deterministic Mathematical Scoring Engine (0% AI Tokens)
  */
 function calculateScore(matchingResults, atsResults) {
-  const { mustHaveResults, niceToHaveResults, criticalMissing } = matchingResults;
+  const { mustHaveResults, niceToHaveResults, criticalMissing, extraSkills = [], extraSkillsPenalty = 0 } = matchingResults;
   const { atsScore } = atsResults;
 
   // 1. Calculate Must-Have Match Ratio
@@ -51,6 +51,11 @@ function calculateScore(matchingResults, atsResults) {
     finalScore = Math.max(0, finalScore - 10);
   }
 
+  // Penalty for extra / unrelated skills present in candidate resume that were not requested in JD
+  if (extraSkillsPenalty > 0) {
+    finalScore = Math.max(0, finalScore - extraSkillsPenalty);
+  }
+
   // 5. Categorization based on exact percentage brackets
   let category = 'Reject';
   if (finalScore >= 80) {
@@ -71,7 +76,9 @@ function calculateScore(matchingResults, atsResults) {
     finalScore,
     category,
     criticalFlag,
-    criticalMissing
+    criticalMissing,
+    extraSkills,
+    extraSkillsPenalty
   };
 }
 

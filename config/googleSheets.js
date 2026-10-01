@@ -550,8 +550,9 @@ async function writeBatchToMasterDatabase(masterSheetUrl, operationName, results
       }
     });
 
-    // 3. Prepare headers & candidate rows
     // 3. Prepare headers & candidate rows sorted by finalScore descending
+    const sortedResults = [...(results || [])].sort((a, b) => (b.finalScore || b.totalScore || 0) - (a.finalScore || a.totalScore || 0));
+
     const headers = [
       'Candidate Name',
       'Email',
@@ -669,7 +670,7 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
     // 2. Read Master_Index values
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${indexSheetName}!A1:F100`
+      range: `${indexSheetName}!A1:F1000`
     });
 
     const rows = res.data.values;
@@ -695,10 +696,14 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
         if (match) tabName = match[1];
       }
 
-      // CHECK: Does this tab actually exist in Google Sheet?
-      if (tabName && !existingSheetTitles.includes(tabName)) {
+      // Resilient check: Does this tab actually exist in Google Sheet? (case-insensitive & trimmed)
+      const matchedTitle = existingSheetTitles.find(t => t.trim().toLowerCase() === tabName.trim().toLowerCase());
+      if (tabName && !matchedTitle) {
         console.log(`Skipping deleted Google Sheet tab: ${tabName}`);
         continue; // TAB WAS DELETED IN GOOGLE SHEET! SKIP IT!
+      }
+      if (matchedTitle) {
+        tabName = matchedTitle; // Use exact title from sheet
       }
 
       const isGithub = /github/i.test(operationName) || /^gh_/i.test(tabName);
