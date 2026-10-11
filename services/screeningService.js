@@ -38,7 +38,7 @@ async function processScreening({ sheetUrl, masterSheetUrl, jdText, mustHave = [
     const chunk = candidates.slice(i, i + chunkSize);
     const chunkResults = await Promise.all(
       chunk.map(async (candidate) => {
-        let resumeText = '';
+        let textToEval = resumeText || '';
         let fetchError = null;
 
         try {
@@ -151,7 +151,7 @@ async function processScreening({ sheetUrl, masterSheetUrl, jdText, mustHave = [
   };
 }
 
-async function processAtsCheck({ sheetUrl, masterSheetUrl, resumeUrl, operationName = '' }, onProgress) {
+async function processAtsCheck({ sheetUrl, masterSheetUrl, resumeUrl, resumeText, operationName = '' }, onProgress) {
   const { evaluateAtsRubric } = require('../engine/atsRubricEvaluator');
 
   // Case 1: Google Sheet URL provided
@@ -176,26 +176,35 @@ async function processAtsCheck({ sheetUrl, masterSheetUrl, resumeUrl, operationN
       const chunk = candidates.slice(i, i + chunkSize);
       const chunkResults = await Promise.all(
         chunk.map(async (candidate) => {
-          let resumeText = '';
+          let textContent = '';
           let fetchError = null;
 
           try {
             if (candidate.resumeLink) {
-              resumeText = await fetchResumeText(candidate.resumeLink);
+              textContent = await fetchResumeText(candidate.resumeLink);
             } else {
-              fetchError = 'Resume link was missing in sheet.';
+              fetchError = 'Resume link missing in candidate row';
             }
           } catch (err) {
-            fetchError = err.message;
+            fetchError = err.message || 'Failed to download resume';
           }
 
           let rubricResult;
           if (fetchError) {
             rubricResult = evaluateAtsRubric('');
-            rubricResult.feedback.summary = `Fetch Error: ${fetchError}`;
+            rubricResult.feedback = { summary: 'Fetch Error: ' + fetchError };
+            if (!rubricResult.recommendations) rubricResult.recommendations = [];
+            rubricResult.recommendations.unshift({
+              severity: 'CRITICAL',
+              title: 'Resume Access Error',
+              message: fetchError
+            });
           } else {
-            rubricResult = evaluateAtsRubric(resumeText);
+            rubricResult = evaluateAtsRubric(textContent);
           }
+
+          const scoreVal = rubricResult.ats_score !== undefined ? rubricResult.ats_score : (rubricResult.totalScore || 0);
+          const itemGrade = rubricResult.grade || (scoreVal >= 80 ? 'ATS Friendly' : (scoreVal >= 60 ? 'Needs Work' : 'High Risk'));
 
           const resultItem = {
             ...rubricResult,
@@ -203,12 +212,15 @@ async function processAtsCheck({ sheetUrl, masterSheetUrl, resumeUrl, operationN
             email: candidate.email || 'N/A',
             phone: candidate.phone || 'N/A',
             resumeLink: candidate.resumeLink || '',
-            atsScore: rubricResult.totalScore,
-            matchScore: rubricResult.breakdown?.keywordMatch?.score || 0,
-            finalScore: rubricResult.totalScore,
-            category: rubricResult.grade,
-            criticalFlag: rubricResult.totalScore < 55,
-            feedback: rubricResult.feedback?.summary || ''
+            ats_score: scoreVal,
+            atsScore: scoreVal,
+            totalScore: scoreVal,
+            matchScore: scoreVal,
+            finalScore: scoreVal,
+            grade: itemGrade,
+            category: itemGrade,
+            criticalFlag: scoreVal < 60,
+            feedback: rubricResult.feedback?.summary || (itemGrade + ' (' + scoreVal + '/100 Marks)')
           };
 
           return { candidate, resultItem };
@@ -229,32 +241,28 @@ async function processAtsCheck({ sheetUrl, masterSheetUrl, resumeUrl, operationN
           });
         }
       });
+
+      try {
+        const chunkUpdates = chunkResults.map(cr => ({ rowIndex: cr.candidate.rowIndex, result: cr.resultItem }));
+        await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, chunkUpdates);
+      } catch (chunkErr) {
+        console.error('Incremental candidate sheet update failed:', chunkErr.message);
+      }
     }
 
-    // Step 4: Batch Update ATS scores & feedback back to the Google Sheet columns!
-    try {
-      await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, updateItems);
-    } catch (writeErr) {
-      console.error('Failed to batch update ATS results in Google Sheet:', writeErr.message);
-    }
-
-    // Step 5: Automatically sort candidate sheet rows by Final Score (%) in DESCENDING order!
     try {
       await sortSheetByFinalScore(spreadsheetId, sheetName, colMap);
     } catch (sortErr) {
       console.error('Failed to sort candidate sheet:', sortErr.message);
     }
 
-    // Step 6: Log operation summary to Master Central Database Sheet & Master_Index
     const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || sheetUrl;
-    const isDifferentMaster = extractSpreadsheetId(targetMasterUrl) !== spreadsheetId;
-    const opName = operationName || `ATS_Check_${sheetName}`;
+    const opName = operationName || ('ATS_Check_' + sheetName);
 
     try {
-      if (isDifferentMaster) {
+      if (targetMasterUrl) {
         await writeBatchToMasterDatabase(targetMasterUrl, opName, results);
-      } else {
-        await logOperationToMasterSheet(spreadsheetId, opName, sheetName, total, results);
+        await logOperationToMasterSheet(targetMasterUrl, opName, sheetName, total, results);
       }
     } catch (masterErr) {
       console.error('Failed to log ATS check to Master Sheet:', masterErr.message);
@@ -263,53 +271,56 @@ async function processAtsCheck({ sheetUrl, masterSheetUrl, resumeUrl, operationN
     return { total, results };
   }
 
-  // Case 2: Single Direct Resume Link provided
-  if (resumeUrl && resumeUrl.trim().length > 0) {
-    let resumeText = '';
+  // Case 2: Single Direct Resume Link or Text provided
+  if ((resumeUrl && resumeUrl.trim().length > 0) || (resumeText && resumeText.trim().length > 0)) {
+    let textToEval = resumeText || '';
     let fetchError = null;
 
-    try {
-      resumeText = await fetchResumeText(resumeUrl);
-    } catch (err) {
-      fetchError = err.message;
+    if (resumeUrl && !textToEval) {
+      try {
+        textToEval = await fetchResumeText(resumeUrl);
+      } catch (err) {
+        fetchError = err.message;
+      }
     }
 
-    let rubricResult;
+    let rubricResult = evaluateAtsRubric(fetchError ? '' : textToEval);
     if (fetchError) {
-      rubricResult = evaluateAtsRubric('');
-      rubricResult.feedback.summary = `Fetch Error: ${fetchError}`;
-    } else {
-      rubricResult = evaluateAtsRubric(resumeText);
+      rubricResult.feedback = { summary: 'Fetch Error: ' + fetchError };
     }
+
+    const scoreVal = rubricResult.ats_score !== undefined ? rubricResult.ats_score : (rubricResult.totalScore || 0);
+    const itemGrade = rubricResult.grade || (scoreVal >= 80 ? 'ATS Friendly' : (scoreVal >= 60 ? 'Needs Work' : 'High Risk'));
 
     const singleItem = {
       ...rubricResult,
-      name: 'Direct Candidate Resume',
       email: 'N/A',
       phone: 'N/A',
-      resumeLink: resumeUrl,
-      atsScore: rubricResult.totalScore,
-      matchScore: rubricResult.breakdown?.keywordMatch?.score || 0,
-      finalScore: rubricResult.totalScore,
-      category: rubricResult.grade,
-      criticalFlag: rubricResult.totalScore < 55,
-      feedback: rubricResult.feedback?.summary || ''
+      ats_score: scoreVal,
+      atsScore: scoreVal,
+      totalScore: scoreVal,
+      matchScore: scoreVal,
+      finalScore: scoreVal,
+      grade: itemGrade,
+      category: itemGrade,
+      criticalFlag: scoreVal < 60,
+      feedback: rubricResult.feedback?.summary || (itemGrade + ' (' + scoreVal + '/100 Marks)')
     };
 
     const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL;
     if (targetMasterUrl) {
       try {
-        const opName = operationName || 'ATS_Direct_Check';
+        const opName = operationName || 'ATS_Check_Single';
         await writeBatchToMasterDatabase(targetMasterUrl, opName, [singleItem]);
-      } catch (masterErr) {
-        console.error('Failed to log single ATS check to Master Sheet:', masterErr.message);
+      } catch (err) {
+        console.error('Failed to log single ATS check:', err.message);
       }
     }
 
     return { total: 1, results: [singleItem] };
   }
 
-  throw new Error('Please provide either a Candidate Google Sheet URL or a Direct Resume Link.');
+  throw new Error('Please provide either a Candidate Google Sheet URL or a Direct Resume Link / Text.');
 }
 
 async function processGithubCheck({ sheetUrl, masterSheetUrl, githubUrl, operationName = '' }, userEmail, onProgress) {

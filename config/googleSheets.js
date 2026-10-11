@@ -180,7 +180,7 @@ async function getSheetData(sheetUrlOrId) {
   const nameIdx = headers.findIndex(h => /name|candidate|applicant|student|username/i.test(h));
   const emailIdx = headers.findIndex(h => /email|mail/i.test(h));
   const phoneIdx = headers.findIndex(h => /phone|mobile|contact|num/i.test(h));
-  const resumeIdx = headers.findIndex(h => /github|git|profile|submission|link|url|drive|file|resume|cv/i.test(h));
+  const resumeIdx = headers.findIndex(h => /github|git|profile|submission|link|url|drive|file|resume|cv|upload|document|pdf|attachment/i.test(h));
 
   // Required output headers
   const requiredOutputHeaders = [
@@ -241,7 +241,7 @@ async function getSheetData(sheetUrlOrId) {
 
     // Fallback: search row for any URL or github handle if column missed
     if (!resumeLink) {
-      const cellWithUrl = row.find(cell => cell && typeof cell === 'string' && (cell.includes('http') || cell.includes('github') || cell.includes('@')));
+      const cellWithUrl = row.find(cell => cell && typeof cell === 'string' && (cell.includes('http://') || cell.includes('https://') || cell.includes('drive.google.com') || cell.includes('docs.google.com') || cell.includes('dropbox.com') || cell.includes('github.com')));
       if (cellWithUrl) resumeLink = cellWithUrl.trim();
     }
 
@@ -685,6 +685,13 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
 
       const operationName = row[0] ? row[0].trim() : `Batch #${i}`;
       const dateFormatted = row[1] ? row[1].trim() : '';
+      let parsedTimestamp = new Date().toISOString();
+      if (dateFormatted) {
+        const d = new Date(dateFormatted);
+        if (!isNaN(d.getTime())) {
+          parsedTimestamp = d.toISOString();
+        }
+      }
       const totalCandidates = parseInt(row[2]) || 0;
       const goodToGoCount = parseInt(row[3]) || 0;
       const waitingListCount = parseInt(row[4]) || 0;
@@ -835,7 +842,7 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
           id: `gh_gs_${i}_${tabName || operationName}`,
           type: 'github',
           operationName,
-          timestamp: new Date().toISOString(),
+          timestamp: parsedTimestamp,
           dateFormatted,
           studentSheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
           totalCandidates: candidates.length || totalCandidates,
@@ -852,7 +859,7 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
           id: `gs_${i}_${tabName || operationName}`,
           type: isAts ? 'ats' : 'screening',
           operationName,
-          timestamp: new Date().toISOString(),
+          timestamp: parsedTimestamp,
           dateFormatted,
           studentSheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
           totalCandidates: candidates.length || totalCandidates,

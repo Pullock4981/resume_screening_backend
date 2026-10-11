@@ -13,6 +13,7 @@ yarn-debug.log*
 yarn-error.log*
 scratch/
 scratch_debug.js
+code.txt
 
 # OS / System files
 .DS_Store

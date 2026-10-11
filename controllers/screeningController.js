@@ -33,6 +33,7 @@ const handleScreening = async (req, res) => {
     const outcome = await processScreening(
       {
         sheetUrl,
+        resumeText: req.body?.resumeText,
         masterSheetUrl: masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || '',
         jdText,
         mustHave: mustHave || [],
@@ -87,6 +88,9 @@ const handleGetHistory = async (req, res) => {
 };
 
 const handleAtsCheck = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Content-Type', 'application/x-ndjson');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -95,9 +99,9 @@ const handleAtsCheck = async (req, res) => {
   }
 
   try {
-    const { sheetUrl, masterSheetUrl, resumeUrl, operationName } = req.body || {};
+    const { sheetUrl, masterSheetUrl, resumeUrl, resumeText, operationName } = req.body || {};
 
-    if (!sheetUrl && !resumeUrl) {
+    if (!sheetUrl && !resumeUrl && !req.body?.resumeText) {
       res.write(JSON.stringify({ status: 'error', error: 'Google Sheet URL or Resume Link is required.' }) + '\n');
       return res.end();
     }
@@ -108,6 +112,7 @@ const handleAtsCheck = async (req, res) => {
         sheetUrl,
         masterSheetUrl: masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || '',
         resumeUrl,
+        resumeText: req.body?.resumeText || resumeText,
         operationName: operationName || ''
       },
       (progressData) => {
