@@ -3,14 +3,23 @@ const { getUsersFromSheet, updateUserInSheet, getLoginLogsFromSheet } = require(
 const handleGetUsers = async (req, res) => {
   try {
     const rawUsers = await getUsersFromSheet();
-    const safeUsers = rawUsers.map(u => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      role: u.role,
-      status: u.status,
-      createdAt: u.createdAt
-    }));
+    const seen = new Set();
+    const safeUsers = [];
+
+    for (const u of rawUsers) {
+      const key = (u.id || u.email || '').trim().toLowerCase();
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+
+      safeUsers.push({
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        createdAt: u.createdAt
+      });
+    }
 
     return res.status(200).json({ success: true, users: safeUsers });
   } catch (err) {
@@ -24,8 +33,8 @@ const handleUpdateUserStatus = async (req, res) => {
     const { userId } = req.params;
     const { status } = req.body;
 
-    if (!['active', 'banned'].includes(status)) {
-      return res.status(400).json({ success: false, error: 'Status must be "active" or "banned".' });
+    if (!['active', 'banned', 'pending'].includes(status)) {
+      return res.status(400).json({ success: false, error: 'Status must be "active", "pending", or "banned".' });
     }
 
     await updateUserInSheet(null, userId, { status });

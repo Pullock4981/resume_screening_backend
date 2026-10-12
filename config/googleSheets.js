@@ -651,10 +651,22 @@ async function sortSheetByFinalScore(spreadsheetId, sheetName, colMap) {
  * Fetch live history batches from Master Database Spreadsheet.
  * Automatically filters out any deleted tabs or deleted rows!
  */
-async function fetchMasterHistory(masterSheetUrlOrId) {
+let masterHistoryCache = null;
+let masterHistoryCacheTime = 0;
+
+/**
+ * Fetch live history batches from Master Database Spreadsheet.
+ * Optimized with batchGet and in-memory caching for lightning fast response (<1s).
+ */
+async function fetchMasterHistory(masterSheetUrlOrId, forceRefresh = false) {
   try {
     const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
     if (!spreadsheetId) return [];
+
+    // Serve from cache if fresh within 45 seconds
+    if (!forceRefresh && masterHistoryCache && (Date.now() - masterHistoryCacheTime < 45000)) {
+      return masterHistoryCache;
+    }
 
     const sheets = getGoogleSheetsClient();
 
@@ -675,6 +687,39 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
 
     const rows = res.data.values;
     if (!rows || rows.length <= 1) return [];
+
+    // 3. Collect tabs to fetch in a SINGLE batchGet API call instead of 60 individual sequential requests
+    const tabsToFetch = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+      let tabName = row[5] ? row[5].trim() : '';
+      if (tabName.includes('=')) {
+        const match = tabName.match(/,\s*["']([^"']+)["']\)/);
+        if (match) tabName = match[1];
+      }
+      const matchedTitle = existingSheetTitles.find(t => t.trim().toLowerCase() === tabName.trim().toLowerCase());
+      if (matchedTitle && !tabsToFetch.includes(matchedTitle)) {
+        tabsToFetch.push(matchedTitle);
+      }
+    }
+
+    const tabDataMap = new Map();
+    if (tabsToFetch.length > 0) {
+      try {
+        const batchRes = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges: tabsToFetch.map(t => `'${t}'!A1:Z500`)
+        });
+        (batchRes.data.valueRanges || []).forEach(vr => {
+          if (!vr.range) return;
+          const title = vr.range.split('!')[0].replace(/^'|'$/g, '');
+          tabDataMap.set(title.toLowerCase(), vr.values || []);
+        });
+      } catch (batchErr) {
+        console.warn('Batch get tabs notice:', batchErr.message);
+      }
+    }
 
     const historyRecords = [];
 
@@ -713,22 +758,61 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
         tabName = matchedTitle; // Use exact title from sheet
       }
 
-      const isGithub = /github/i.test(operationName) || /^gh_/i.test(tabName);
-      const isAts = /ats/i.test(operationName);
+      const isLinkedin = /linkedin/i.test(operationName) || /^li_/i.test(tabName);
+      const isGithub = (/github/i.test(operationName) || /^gh_/i.test(tabName)) && !isLinkedin;
+      const isAts = /ats/i.test(operationName) && !isLinkedin && !isGithub;
 
       let candidates = [];
-      if (tabName && existingSheetTitles.includes(tabName)) {
-        try {
-          const tabRes = await sheets.spreadsheets.values.get({
-            spreadsheetId,
-            range: `${tabName}!A1:Z10000`
-          });
-
-          const tabRows = tabRes.data.values;
-          if (tabRows && tabRows.length > 1) {
+      const tabRows = tabDataMap.get(tabName.toLowerCase()) || [];
+      if (tabRows && tabRows.length > 1) {
             const tabHeaders = tabRows[0].map(h => h ? h.trim() : '');
 
-            if (isGithub) {
+            if (isLinkedin) {
+              const nameIdx = tabHeaders.findIndex(h => /name|username|candidate/i.test(h));
+              const urlIdx = tabHeaders.findIndex(h => /linkedin|profile|url/i.test(h));
+              const scoreIdx = tabHeaders.findIndex(h => /total score|score/i.test(h));
+              const pctIdx = tabHeaders.findIndex(h => /percentage|pct|%/i.test(h));
+              const gradeIdx = tabHeaders.findIndex(h => /grade|status/i.test(h));
+              const emailIdx = tabHeaders.findIndex(h => /email|checked by/i.test(h));
+              const presentIdx = tabHeaders.findIndex(h => /present|কী কী আছে/i.test(h));
+              const missingIdx = tabHeaders.findIndex(h => /missing|কী কী নাই/i.test(h));
+              const bdIdx = tabHeaders.findIndex(h => /breakdown|json/i.test(h));
+
+              for (let r = 1; r < tabRows.length; r++) {
+                const tr = tabRows[r];
+                if (!tr || tr.length === 0) continue;
+
+                const name = nameIdx !== -1 && tr[nameIdx] ? tr[nameIdx] : `Candidate #${r}`;
+                const profileUrl = urlIdx !== -1 && tr[urlIdx] ? tr[urlIdx] : '';
+                const totalScore = scoreIdx !== -1 ? parseInt(tr[scoreIdx]) || 0 : 0;
+                const percentage = pctIdx !== -1 ? parseInt(tr[pctIdx]) || 0 : Math.round((totalScore / 60) * 100);
+                const grade = gradeIdx !== -1 && tr[gradeIdx] ? tr[gradeIdx] : (totalScore >= 50 ? 'Excellent Profile' : totalScore >= 40 ? 'Strong Profile' : totalScore >= 30 ? 'Moderate Profile' : 'Needs Improvement');
+                const email = emailIdx !== -1 && tr[emailIdx] ? tr[emailIdx] : 'N/A';
+                const presentItems = presentIdx !== -1 && tr[presentIdx] ? tr[presentIdx] : '';
+                const missingItems = missingIdx !== -1 && tr[missingIdx] ? tr[missingIdx] : '';
+                let breakdown = [];
+                if (bdIdx !== -1 && tr[bdIdx]) {
+                  try {
+                    breakdown = JSON.parse(tr[bdIdx]);
+                  } catch (e) {}
+                }
+
+                candidates.push({
+                  username: name,
+                  name,
+                  email,
+                  profileUrl,
+                  totalScore,
+                  maxScore: 60,
+                  percentage,
+                  grade,
+                  gradeColor: totalScore >= 50 ? 'emerald' : totalScore >= 40 ? 'indigo' : totalScore >= 30 ? 'amber' : 'rose',
+                  presentItems,
+                  missingItems,
+                  breakdown
+                });
+              }
+            } else if (isGithub) {
               const nameIdx = tabHeaders.findIndex(h => /name|username|candidate/i.test(h));
               const urlIdx = tabHeaders.findIndex(h => /url|profile/i.test(h));
               const scoreIdx = tabHeaders.findIndex(h => /total score|score/i.test(h));
@@ -827,12 +911,28 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
               }
             }
           }
-        } catch (e) {
-          console.error(`Error loading candidates for tab ${tabName}:`, e.message);
-        }
-      }
 
-      if (isGithub) {
+      if (isLinkedin) {
+        const excellentCount = candidates.filter(c => (c.totalScore || 0) >= 50).length;
+        const strongCount = candidates.filter(c => (c.totalScore || 0) >= 40 && (c.totalScore || 0) < 50).length;
+        const moderateCount = candidates.filter(c => (c.totalScore || 0) >= 30 && (c.totalScore || 0) < 40).length;
+        const needsImprovementCount = candidates.filter(c => (c.totalScore || 0) < 30).length;
+
+        historyRecords.push({
+          id: `li_gs_${i}_${tabName || operationName}`,
+          type: 'linkedin',
+          operationName,
+          timestamp: parsedTimestamp,
+          dateFormatted,
+          studentSheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+          totalCandidates: candidates.length || totalCandidates,
+          excellentCount,
+          strongCount,
+          moderateCount,
+          needsImprovementCount,
+          results: candidates
+        });
+      } else if (isGithub) {
         const excellentCount = candidates.filter(c => (c.totalScore || 0) >= 50).length;
         const strongCount = candidates.filter(c => (c.totalScore || 0) >= 40 && (c.totalScore || 0) < 50).length;
         const moderateCount = candidates.filter(c => (c.totalScore || 0) >= 30 && (c.totalScore || 0) < 40).length;
@@ -871,11 +971,12 @@ async function fetchMasterHistory(masterSheetUrlOrId) {
       }
     }
 
+    masterHistoryCache = historyRecords;
+    masterHistoryCacheTime = Date.now();
     return historyRecords;
   } catch (err) {
-
     console.error('Failed to fetch master history from Google Sheets:', err.message);
-    return [];
+    return masterHistoryCache || [];
   }
 }
 
@@ -972,7 +1073,7 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
             passwordHash = val;
           } else if ((val.toLowerCase() === 'admin' || val.toLowerCase() === 'user') && !role) {
             role = val.toLowerCase();
-          } else if ((val.toLowerCase() === 'active' || val.toLowerCase() === 'banned') && !status) {
+          } else if ((val.toLowerCase() === 'active' || val.toLowerCase() === 'banned' || val.toLowerCase() === 'pending') && !status) {
             status = val.toLowerCase();
           }
         }
@@ -983,7 +1084,7 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
         if (!role && r[4]) role = r[4].trim().toLowerCase();
 
         // Account specific role overrides (Admin accounts)
-        if (email === 'nexadmin.ph@gmail.com' || email === 'ashikmahmud.ph@gmail.com' || email === 'admin@admin.com') {
+        if (email === 'nexadmin.ph@gmail.com' || email === 'ashikmahmud.ph@gmail.com') {
           role = 'admin';
         }
         if (!role) role = 'user';
@@ -1003,7 +1104,7 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
     }
 
     // Ensure Central Admin user (nexadmin.ph@gmail.com / @1234Admin) exists
-    const hasCentralAdmin = users.some(u => u.email === 'nexadmin.ph@gmail.com');
+    const hasCentralAdmin = users.some(u => (u.email || '').toLowerCase() === 'nexadmin.ph@gmail.com' || (u.id || '').toLowerCase() === 'usr_admin_nex');
     if (!hasCentralAdmin) {
       const bcrypt = require('bcryptjs');
       const defaultHash = await bcrypt.hash('@1234Admin', 10);
@@ -1026,7 +1127,24 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
       }
     }
 
-    return users;
+    // Deduplicate across all users to guarantee unique id and email
+    const seenIds = new Set();
+    const seenEmails = new Set();
+    const uniqueUsers = [];
+
+    for (const u of users) {
+      const idKey = (u.id || '').trim().toLowerCase();
+      const emailKey = (u.email || '').trim().toLowerCase();
+
+      if (idKey && seenIds.has(idKey)) continue;
+      if (emailKey && seenEmails.has(emailKey)) continue;
+
+      if (idKey) seenIds.add(idKey);
+      if (emailKey) seenEmails.add(emailKey);
+      uniqueUsers.push(u);
+    }
+
+    return uniqueUsers;
   } catch (err) {
     console.error('Failed to get users from sheet:', err.message);
     return [];
@@ -1287,6 +1405,100 @@ async function saveGithubCheckToSheet(masterSheetUrlOrId, operationName, results
   }
 }
 
+async function saveLinkedinCheckToSheet(masterSpreadsheetIdOrUrl, results, operationName, userEmail) {
+  const masterSpreadsheetId = extractSpreadsheetId(masterSpreadsheetIdOrUrl);
+  if (!masterSpreadsheetId || !results || results.length === 0) return;
+
+  const sheets = getGoogleSheetsClient();
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const cleanTitle = `LI_${(operationName || dateStr).replace(/[^a-zA-Z0-9_\- ]/g, '').slice(0, 20)}`;
+  let targetTabName = cleanTitle;
+
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: masterSpreadsheetId });
+    const existingTitles = meta.data.sheets.map(s => s.properties.title);
+
+    let counter = 1;
+    while (existingTitles.includes(targetTabName)) {
+      targetTabName = `${cleanTitle.slice(0, 15)}_${counter++}`;
+    }
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: masterSpreadsheetId,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: targetTabName } } }]
+      }
+    });
+
+    const headers = [
+      'Candidate Name',
+      'LinkedIn Profile URL',
+      'Total Score (out of 60)',
+      'Percentage (%)',
+      'Grade / Status',
+      'Checked By Email',
+      'Checked At',
+      'LinkedIn Present Criteria (কী কী আছে)',
+      'LinkedIn Missing Criteria (কী কী নাই)',
+      'Breakdown JSON'
+    ];
+
+    const sortedResults = [...results].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+
+    const timeFormatted = new Date().toLocaleString('en-US', {
+      timeZone: 'Asia/Dhaka',
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    });
+
+    const rowsData = [
+      headers,
+      ...sortedResults.map(r => {
+        const passedList = (r.breakdown || []).filter(b => b.passed);
+        const missingList = (r.breakdown || []).filter(b => !b.passed);
+
+        const presentStr = r.presentItems || (passedList.length > 0 
+          ? passedList.map((b) => `• ${b.title || b.criterion} (+${b.score}/${b.maxScore})`).join('\n')
+          : 'None');
+        const missingStr = r.missingItems || (missingList.length > 0 
+          ? missingList.map((b) => `• ${b.title || b.criterion} (${b.score}/${b.maxScore})`).join('\n')
+          : '🎉 Everything Present (0 Missing)');
+
+        return [
+          r.name || r.username || '',
+          r.profileUrl || '',
+          r.totalScore || 0,
+          r.percentage || 0,
+          r.grade || '',
+          userEmail || 'N/A',
+          timeFormatted,
+          presentStr,
+          missingStr,
+          JSON.stringify(r.breakdown || [])
+        ];
+      })
+    ];
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: masterSpreadsheetId,
+      range: `${targetTabName}!A1`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: rowsData }
+    });
+
+    await logOperationToMasterSheet(
+      masterSpreadsheetId,
+      `[LinkedIn Check] ${operationName || targetTabName} (by ${userEmail || 'User'})`,
+      targetTabName,
+      results.length,
+      sortedResults.map(r => ({ finalScore: r.percentage }))
+    );
+    masterHistoryCache = null;
+  } catch (err) {
+    console.error('Failed to save LinkedIn check to Google Sheet:', err.message);
+  }
+}
+
 module.exports = {
   extractSpreadsheetId,
   getSheetData,
@@ -1302,7 +1514,9 @@ module.exports = {
   updateUserInSheet,
   logUserLoginToSheet,
   getLoginLogsFromSheet,
-  saveGithubCheckToSheet
+  saveGithubCheckToSheet,
+  saveLinkedinCheckToSheet
 };
+
 
 

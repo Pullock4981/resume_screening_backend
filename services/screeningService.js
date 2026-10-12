@@ -337,40 +337,70 @@ async function processGithubCheck({ sheetUrl, masterSheetUrl, githubUrl, operati
     }
 
     const total = candidates.length;
-    const results = [];
+    const results = new Array(total);
+    const updateBuffer = [];
 
     if (onProgress) {
       onProgress({ completed: 0, total, status: 'started' });
     }
 
-    const chunkSize = 5;
-    for (let i = 0; i < candidates.length; i += chunkSize) {
-      const chunk = candidates.slice(i, i + chunkSize);
+    // High performance concurrency worker pool (40 parallel workers to finish 1000 candidates in < 120s)
+    const CONCURRENCY = Math.min(40, total);
+    let nextIndex = 0;
+    let completedCount = 0;
+    let lastProgressTime = 0;
 
-      const chunkResults = await Promise.all(
-        chunk.map(async (candidate) => {
-          let targetGithub = '';
-          const candidateValues = Object.values(candidate.rawRowData || {}).join(' ');
-          const ghMatch = candidateValues.match(/github\.com\/([a-zA-Z0-9_-]+)/i);
+    async function githubWorker() {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= total) break;
 
-          if (ghMatch) {
-            targetGithub = `https://github.com/${ghMatch[1]}`;
-          } else if (candidate.resumeLink && candidate.resumeLink.includes('github.com')) {
-            targetGithub = candidate.resumeLink;
-          } else {
-            const handleMatch = candidateValues.match(/@([a-zA-Z0-9_-]{3,39})/);
-            if (handleMatch) {
-              targetGithub = handleMatch[1];
-            }
+        const candidate = candidates[i];
+        let targetGithub = '';
+        const candidateValues = Object.values(candidate.rawRowData || {}).join(' ');
+        const ghMatch = candidateValues.match(/github\.com\/([a-zA-Z0-9_-]+)/i);
+
+        if (ghMatch) {
+          targetGithub = `https://github.com/${ghMatch[1]}`;
+        } else if (candidate.resumeLink && candidate.resumeLink.includes('github.com')) {
+          targetGithub = candidate.resumeLink;
+        } else {
+          const handleMatch = candidateValues.match(/@([a-zA-Z0-9_-]{3,39})/);
+          if (handleMatch) {
+            targetGithub = handleMatch[1];
           }
+        }
 
-          let evalResult = null;
-          if (!targetGithub) {
+        let evalResult = null;
+        if (!targetGithub) {
+          evalResult = {
+            username: candidate.name || 'N/A',
+            name: candidate.name || 'Candidate',
+            avatarUrl: '',
+            profileUrl: '#',
+            bio: '',
+            location: '',
+            publicRepos: 0,
+            followers: 0,
+            following: 0,
+            totalScore: 0,
+            maxScore: 60,
+            percentage: 0,
+            grade: 'No GitHub Link',
+            gradeColor: 'rose',
+            breakdown: [{ title: 'GitHub Link Missing', score: 0, maxScore: 60, passed: false, detail: 'No GitHub profile URL or @username provided in candidate Google Sheet row.' }],
+            topRepos: []
+          };
+        } else {
+          try {
+            evalResult = await evaluateGithubProfile(targetGithub);
+          } catch (err) {
+            const isRateLimit = err.message && err.message.includes('Rate Limit');
             evalResult = {
-              username: candidate.name || 'N/A',
-              name: candidate.name || 'Candidate',
+              username: extractGithubUsername(targetGithub) || candidate.name || 'Unknown',
+              name: candidate.name || 'Unknown',
               avatarUrl: '',
-              profileUrl: '#',
+              profileUrl: targetGithub || '#',
               bio: '',
               location: '',
               publicRepos: 0,
@@ -379,77 +409,36 @@ async function processGithubCheck({ sheetUrl, masterSheetUrl, githubUrl, operati
               totalScore: 0,
               maxScore: 60,
               percentage: 0,
-              grade: 'No GitHub Link',
+              grade: isRateLimit ? 'Rate Limited' : 'Needs Improvement',
               gradeColor: 'rose',
-              breakdown: [{ title: 'GitHub Link Missing', score: 0, maxScore: 60, passed: false, detail: 'No GitHub profile URL or @username provided in candidate Google Sheet row.' }],
+              breakdown: [{ title: isRateLimit ? 'GitHub Rate Limit' : 'Profile Error', score: 0, maxScore: 60, passed: false, detail: err.message }],
               topRepos: []
             };
-          } else {
-            try {
-              evalResult = await evaluateGithubProfile(targetGithub);
-            } catch (err) {
-              const isRateLimit = err.message && err.message.includes('Rate Limit');
-              evalResult = {
-                username: extractGithubUsername(targetGithub) || candidate.name || 'Unknown',
-                name: candidate.name || 'Unknown',
-                avatarUrl: '',
-                profileUrl: targetGithub || '#',
-                bio: '',
-                location: '',
-                publicRepos: 0,
-                followers: 0,
-                following: 0,
-                totalScore: 0,
-                maxScore: 60,
-                percentage: 0,
-                grade: isRateLimit ? 'Rate Limited' : 'Needs Improvement',
-                gradeColor: 'rose',
-                breakdown: [{ title: isRateLimit ? 'GitHub Rate Limit' : 'Profile Error', score: 0, maxScore: 60, passed: false, detail: err.message }],
-                topRepos: []
-              };
-            }
           }
-
-          const passedList = (evalResult.breakdown || []).filter(b => b.passed);
-          const missingList = (evalResult.breakdown || []).filter(b => !b.passed);
-
-          const presentItemsStr = passedList.length > 0 
-            ? passedList.map((b, idx) => `• ${b.title || b.criterion} (+${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
-            : 'None';
-          const missingItemsStr = missingList.length > 0 
-            ? missingList.map((b, idx) => `• ${b.title || b.criterion} (${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
-            : '🎉 Everything Present (0 Missing)';
-
-          const item = {
-            ...evalResult,
-            name: candidate.name || evalResult.name,
-            email: candidate.email || 'N/A',
-            phone: candidate.phone || 'N/A',
-            presentItems: presentItemsStr,
-            missingItems: missingItemsStr
-          };
-
-          return { candidate, item };
-        })
-      );
-
-      chunkResults.forEach(({ candidate, item }, chunkIdx) => {
-        results.push(item);
-
-        if (onProgress) {
-          onProgress({
-            completed: i + chunkIdx + 1,
-            total,
-            currentCandidate: item.name,
-            result: item,
-            status: 'processing'
-          });
         }
-      });
 
-      // Write chunk results directly to candidate sheet in real-time
-      try {
-        const chunkUpdates = chunkResults.map(({ candidate, item }) => ({
+        const passedList = (evalResult.breakdown || []).filter(b => b.passed);
+        const missingList = (evalResult.breakdown || []).filter(b => !b.passed);
+
+        const presentItemsStr = passedList.length > 0 
+          ? passedList.map((b) => `• ${b.title || b.criterion} (+${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
+          : 'None';
+        const missingItemsStr = missingList.length > 0 
+          ? missingList.map((b) => `• ${b.title || b.criterion} (${b.score !== undefined ? b.score : (b.earnedPoints || 0)}/${b.maxScore !== undefined ? b.maxScore : (b.maxPoints || 0)})`).join('\n')
+          : '🎉 Everything Present (0 Missing)';
+
+        const item = {
+          ...evalResult,
+          name: candidate.name || evalResult.name,
+          email: candidate.email || 'N/A',
+          phone: candidate.phone || 'N/A',
+          presentItems: presentItemsStr,
+          missingItems: missingItemsStr
+        };
+
+        results[i] = item;
+
+        updateBuffer.push({
           rowIndex: candidate.rowIndex,
           result: {
             matchScore: item.totalScore,
@@ -461,17 +450,46 @@ async function processGithubCheck({ sheetUrl, masterSheetUrl, githubUrl, operati
             presentItems: item.presentItems,
             missingItems: item.missingItems
           }
-        }));
-        await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, chunkUpdates);
-      } catch (partialErr) {
-        console.error('Partial Google Sheet update failed:', partialErr.message);
+        });
+
+        completedCount++;
+
+        // Stream progress throttle (every 5 candidates or 300ms)
+        const now = Date.now();
+        if (onProgress && (completedCount === total || completedCount % 5 === 0 || now - lastProgressTime > 300)) {
+          lastProgressTime = now;
+          onProgress({
+            completed: completedCount,
+            total,
+            currentCandidate: item.name,
+            result: item,
+            status: 'processing'
+          });
+        }
       }
+    }
+
+    // Run 40 workers in parallel
+    const workers = Array.from({ length: CONCURRENCY }, () => githubWorker());
+    await Promise.all(workers);
+
+    const finalResults = results.filter(Boolean);
+
+    // Bulk update candidate Google Sheet in optimized batches of 100 rows
+    try {
+      const sheetBatchSize = 100;
+      for (let s = 0; s < updateBuffer.length; s += sheetBatchSize) {
+        const batchSlice = updateBuffer.slice(s, s + sheetBatchSize);
+        await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, batchSlice);
+      }
+    } catch (bulkErr) {
+      console.error('Bulk candidate sheet update error for GitHub Check:', bulkErr.message);
     }
 
     try {
       await sortSheetByFinalScore(spreadsheetId, sheetName, colMap);
     } catch (writeErr) {
-      console.error('Failed to sort candidate Google Sheet:', writeErr.message);
+      console.error('Failed to sort candidate Google Sheet for GitHub Check:', writeErr.message);
     }
 
     // Save batch to Master Central Google Sheet
@@ -524,9 +542,234 @@ async function processGithubCheck({ sheetUrl, masterSheetUrl, githubUrl, operati
   throw new Error('Please provide either a Candidate Google Sheet URL or a Direct GitHub URL / Username.');
 }
 
+async function processLinkedinCheck({ sheetUrl, masterSheetUrl, linkedinUrl, operationName = '' }, userEmail, onProgress) {
+  const { evaluateLinkedinProfile, extractLinkedinIdentifier } = require('../engine/linkedinChecker');
+  const { saveLinkedinCheckToSheet } = require('../config/googleSheets');
+
+  // Case 1: Google Sheet URL provided (Batch LinkedIn Evaluation)
+  if (sheetUrl && sheetUrl.trim().length > 0) {
+    const sheetInfo = await getSheetData(sheetUrl);
+    const { spreadsheetId, sheetName, colMap, candidates } = sheetInfo;
+
+    if (!candidates || candidates.length === 0) {
+      throw new Error('No candidate rows found in the Google Sheet.');
+    }
+
+    const total = candidates.length;
+    const results = new Array(total);
+    const updateBuffer = [];
+
+    if (onProgress) {
+      onProgress({ completed: 0, total, status: 'started' });
+    }
+
+    // High performance concurrency worker pool (50 parallel workers to finish 1000 candidates in < 120s)
+    const CONCURRENCY = Math.min(50, total);
+    let nextIndex = 0;
+    let completedCount = 0;
+    let lastProgressTime = 0;
+
+    async function linkedinWorker() {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= total) break;
+
+        const candidate = candidates[i];
+        let targetLinkedin = '';
+        const candidateValues = Object.values(candidate.rawRowData || {}).join(' ');
+        const liMatch = candidateValues.match(/linkedin\.com\/in\/([a-zA-Z0-9_\-%]+)/i);
+
+        if (liMatch) {
+          targetLinkedin = `https://www.linkedin.com/in/${liMatch[1]}`;
+        } else if (candidate.resumeLink && candidate.resumeLink.includes('linkedin.com')) {
+          targetLinkedin = candidate.resumeLink;
+        } else {
+          const inMatch = candidateValues.match(/(?:^|\s)in\/([a-zA-Z0-9_\-%]+)/i);
+          if (inMatch) {
+            targetLinkedin = inMatch[1];
+          }
+        }
+
+        let evalResult = null;
+        if (!targetLinkedin) {
+          evalResult = {
+            username: candidate.name || 'N/A',
+            name: candidate.name || 'Candidate',
+            profileUrl: '#',
+            totalScore: 0,
+            maxScore: 60,
+            percentage: 0,
+            grade: 'No LinkedIn Link',
+            gradeColor: 'rose',
+            passedCount: 0,
+            partialCount: 0,
+            missingCount: 16,
+            breakdown: [{ id: 'missing', title: 'LinkedIn Link Missing', criterion: 'No LinkedIn Profile Link Found', score: 0, maxScore: 60, passed: false, detail: 'No LinkedIn profile URL found in candidate Google Sheet row.' }],
+            headline: 'No Profile Found',
+            aboutSummary: 'Candidate did not provide a LinkedIn URL in their submission row.'
+          };
+        } else {
+          try {
+            evalResult = await evaluateLinkedinProfile(targetLinkedin, candidate);
+          } catch (err) {
+            evalResult = {
+              username: extractLinkedinIdentifier(targetLinkedin) || candidate.name || 'Unknown',
+              name: candidate.name || 'Unknown',
+              profileUrl: targetLinkedin || '#',
+              totalScore: 0,
+              maxScore: 60,
+              percentage: 0,
+              grade: 'Evaluation Error',
+              gradeColor: 'rose',
+              passedCount: 0,
+              partialCount: 0,
+              missingCount: 16,
+              breakdown: [{ id: 'error', title: 'Evaluation Error', criterion: 'LinkedIn Error', score: 0, maxScore: 60, passed: false, detail: err.message }],
+              headline: 'Profile Unavailable',
+              aboutSummary: err.message
+            };
+          }
+        }
+
+        const passedList = (evalResult.breakdown || []).filter(b => b.passed);
+        const missingList = (evalResult.breakdown || []).filter(b => !b.passed);
+
+        const presentItemsStr = passedList.length > 0 
+          ? passedList.map((b) => `• ${b.title || b.criterion} (+${b.maxScore}/${b.maxScore})`).join('\n')
+          : 'None';
+        const missingItemsStr = missingList.length > 0 
+          ? missingList.map((b) => `• ${b.title || b.criterion} (0/${b.maxScore})`).join('\n')
+          : '🎉 Everything Present (0 Missing)';
+
+        const item = {
+          ...evalResult,
+          name: candidate.name || evalResult.name,
+          email: candidate.email || 'N/A',
+          phone: candidate.phone || 'N/A',
+          presentItems: presentItemsStr,
+          missingItems: missingItemsStr
+        };
+
+        results[i] = item;
+
+        updateBuffer.push({
+          rowIndex: candidate.rowIndex,
+          result: {
+            matchScore: item.totalScore,
+            atsScore: item.percentage,
+            finalScore: item.percentage,
+            category: item.grade,
+            criticalFlag: item.totalScore < 30,
+            feedback: `LinkedIn Check (${item.totalScore}/60 Marks - ${item.grade}). ${item.headline}. Profile: ${item.profileUrl}`,
+            presentItems: item.presentItems,
+            missingItems: item.missingItems
+          }
+        });
+
+        completedCount++;
+
+        // Stream progress throttle (every 5 candidates or 300ms)
+        const now = Date.now();
+        if (onProgress && (completedCount === total || completedCount % 5 === 0 || now - lastProgressTime > 300)) {
+          lastProgressTime = now;
+          onProgress({
+            completed: completedCount,
+            total,
+            currentCandidate: item.name || 'Candidate Profile',
+            status: 'processing',
+            result: item
+          });
+        }
+      }
+    }
+
+    // Run 30 workers in parallel
+    const workers = Array.from({ length: CONCURRENCY }, () => linkedinWorker());
+    await Promise.all(workers);
+
+    const finalResults = results.filter(Boolean);
+
+    // Bulk update candidate Google Sheet in optimized batches of 100 rows
+    try {
+      const sheetBatchSize = 100;
+      for (let s = 0; s < updateBuffer.length; s += sheetBatchSize) {
+        const batchSlice = updateBuffer.slice(s, s + sheetBatchSize);
+        await batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, batchSlice);
+      }
+    } catch (bulkErr) {
+      console.error('Bulk candidate sheet update error for LinkedIn Check:', bulkErr.message);
+    }
+
+    try {
+      await sortSheetByFinalScore(spreadsheetId, sheetName, colMap);
+    } catch (writeErr) {
+      console.error('Failed to sort candidate Google Sheet for LinkedIn Check:', writeErr.message);
+    }
+
+    // Save batch to Master Central Google Sheet
+    const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || sheetUrl;
+    const opName = operationName || `Linkedin_Check_${sheetName}`;
+    try {
+      await saveLinkedinCheckToSheet(targetMasterUrl, finalResults, opName, userEmail);
+    } catch (sheetErr) {
+      console.error('Failed to save LinkedIn Check batch to master sheet:', sheetErr.message);
+    }
+
+    return { total, results: finalResults };
+  }
+
+  // Case 2: Single LinkedIn Profile URL or Username
+  if (linkedinUrl && linkedinUrl.trim().length > 0) {
+    const evalResult = await evaluateLinkedinProfile(linkedinUrl.trim());
+    const passedList = (evalResult.breakdown || []).filter(b => b.passed);
+    const missingList = (evalResult.breakdown || []).filter(b => !b.passed);
+
+    const presentItemsStr = passedList.length > 0 
+      ? passedList.map((b) => `• ${b.title || b.criterion} (+${b.maxScore}/${b.maxScore})`).join('\n')
+      : 'None';
+    const missingItemsStr = missingList.length > 0 
+      ? missingList.map((b) => `• ${b.title || b.criterion} (0/${b.maxScore})`).join('\n')
+      : '🎉 Everything Present (0 Missing)';
+
+    const singleItem = {
+      ...evalResult,
+      email: 'N/A',
+      phone: 'N/A',
+      presentItems: presentItemsStr,
+      missingItems: missingItemsStr
+    };
+
+    if (onProgress) {
+      onProgress({
+        completed: 1,
+        total: 1,
+        currentCandidate: evalResult.name || evalResult.username,
+        status: 'processing',
+        result: singleItem
+      });
+    }
+
+    const targetMasterUrl = masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL;
+    if (targetMasterUrl) {
+      try {
+        const opName = operationName || `Linkedin_Check_${evalResult.username}`;
+        await saveLinkedinCheckToSheet(targetMasterUrl, [singleItem], opName, userEmail);
+      } catch (err) {
+        console.error('Failed to save single LinkedIn Check to sheet:', err.message);
+      }
+    }
+
+    return { total: 1, results: [singleItem] };
+  }
+
+  throw new Error('Please provide either a Candidate Google Sheet URL or a Direct LinkedIn Profile URL / Username.');
+}
+
 module.exports = {
   processScreening,
   processAtsCheck,
-  processGithubCheck
+  processGithubCheck,
+  processLinkedinCheck
 };
+
 

@@ -15,7 +15,7 @@ function verifyToken(req, res, next) {
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
-      return res.status(401).json({ success: false, error: 'Session expired (24 Hours). Please log in again.' });
+      return res.status(401).json({ success: false, error: 'Session expired. Please log in again.' });
     }
     return res.status(401).json({ success: false, error: 'Invalid authentication token.' });
   }

@@ -223,6 +223,64 @@ const handleGithubCheck = async (req, res) => {
   }
 };
 
+const handleLinkedinCheck = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
+  try {
+    const { sheetUrl, masterSheetUrl, linkedinUrl, operationName } = req.body || {};
+
+    if (!sheetUrl && !linkedinUrl) {
+      res.write(JSON.stringify({ status: 'error', error: 'Google Sheet URL or LinkedIn Profile URL is required.' }) + '\n');
+      return res.end();
+    }
+
+    const { processLinkedinCheck } = require('../services/screeningService');
+    const userEmail = req.user ? req.user.email : (req.body.email || 'user@system.com');
+
+    const outcome = await processLinkedinCheck(
+      {
+        sheetUrl,
+        masterSheetUrl: masterSheetUrl || process.env.DEFAULT_GOOGLE_SHEET_URL || '',
+        linkedinUrl,
+        operationName: operationName || ''
+      },
+      userEmail,
+      (progressData) => {
+        try {
+          res.write(JSON.stringify(progressData) + '\n');
+        } catch (e) {}
+      }
+    );
+
+    // Audit log this activity in master sheet
+    try {
+      const { logUserLoginToSheet } = require('../config/googleSheets');
+      await logUserLoginToSheet(null, {
+        email: userEmail,
+        role: req.user ? req.user.role : 'user',
+        details: `LinkedIn Check Executed (${outcome.total} candidate profiles evaluated)`
+      });
+    } catch (auditErr) {}
+
+    res.write(JSON.stringify({ status: 'completed', data: outcome }) + '\n');
+    res.end();
+  } catch (error) {
+    console.error('LinkedIn Check Error:', error);
+    try {
+      res.write(JSON.stringify({ status: 'error', error: error.message || 'LinkedIn Profile Evaluation failed.' }) + '\n');
+      res.end();
+    } catch (e) {}
+  }
+};
+
 module.exports = {
   handleScreening,
   handleSSEProgress,
@@ -230,6 +288,8 @@ module.exports = {
   handleAtsCheck,
   handleLogActivity,
   handleGetActivityLogs,
-  handleGithubCheck
+  handleGithubCheck,
+  handleLinkedinCheck
 };
+
 

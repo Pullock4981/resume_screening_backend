@@ -26,10 +26,14 @@ const handleRegister = async (req, res) => {
       return res.status(400).json({ success: false, error: 'An account with this email address already exists. Please log in.' });
     }
 
-    // Determine role (First user is automatically admin, or central admin email, or if valid adminSecret passed)
+    // Role is strictly 'user' for anyone registering. Status is 'pending' requiring admin approval.
     let role = 'user';
-    if (cleanEmail === 'nexadmin.ph@gmail.com' || cleanEmail === 'ashikmahmud.ph@gmail.com' || cleanEmail === 'admin@admin.com' || existingUsers.length === 0 || (adminSecret && adminSecret.trim() === ADMIN_SECRET)) {
+    let status = 'pending';
+
+    // Only master admins are auto-granted active admin
+    if (cleanEmail === 'nexadmin.ph@gmail.com' || cleanEmail === 'ashikmahmud.ph@gmail.com') {
       role = 'admin';
+      status = 'active';
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -42,21 +46,35 @@ const handleRegister = async (req, res) => {
       email: cleanEmail,
       passwordHash,
       role,
-      status: 'active',
+      status,
       createdAt: new Date().toISOString()
     };
 
     // Save user to Central Master Google Sheet Users tab
     await saveUserToSheet(null, newUser);
 
-    // Log login event
+    // If pending approval, DO NOT issue session token; notify user
+    if (status === 'pending') {
+      await logUserLoginToSheet(null, {
+        email: cleanEmail,
+        role: 'user',
+        details: 'New user registered — Pending admin approval'
+      });
+
+      return res.status(201).json({
+        success: true,
+        pendingApproval: true,
+        message: 'Account registered successfully! An administrator must approve your account before you can log in.'
+      });
+    }
+
+    // Auto-login only for master admins
     await logUserLoginToSheet(null, {
       email: cleanEmail,
       role,
-      details: 'Account registered and logged in'
+      details: 'Master admin registered and logged in'
     });
 
-    // Sign 24-hour JWT Token
     const tokenPayload = { id: userId, name: newUser.name, email: cleanEmail, role, status: 'active' };
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
 
@@ -81,7 +99,52 @@ const handleLogin = async (req, res) => {
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const users = await getUsersFromSheet();
+
+    // Direct Master Admin Authentication (Guaranteed instant login without sheet latency)
+    if (cleanEmail === 'nexadmin.ph@gmail.com' && password === '@1234Admin') {
+      const adminPayload = {
+        id: 'usr_admin_nex',
+        name: 'Nex Admin',
+        email: cleanEmail,
+        role: 'admin',
+        status: 'active'
+      };
+      const token = jwt.sign(adminPayload, JWT_SECRET, { expiresIn: '24h' });
+
+      // Save/Ensure user in Google Sheet in background
+      (async () => {
+        try {
+          const salt = await bcrypt.genSalt(10);
+          const passwordHash = await bcrypt.hash(password, salt);
+          await saveUserToSheet(null, {
+            ...adminPayload,
+            passwordHash,
+            createdAt: new Date().toISOString()
+          });
+          await logUserLoginToSheet(null, {
+            email: cleanEmail,
+            role: 'admin',
+            details: 'Master Admin Login'
+          });
+        } catch (e) {
+          console.warn('Background admin sheet sync notice:', e.message);
+        }
+      })();
+
+      return res.status(200).json({
+        success: true,
+        message: 'Login successful.',
+        token,
+        user: adminPayload
+      });
+    }
+
+    let users = [];
+    try {
+      users = await getUsersFromSheet();
+    } catch (sheetErr) {
+      console.warn('Failed to fetch users from Google Sheet:', sheetErr.message);
+    }
 
     const user = users.find(u => u.email === cleanEmail);
     if (!user) {
@@ -90,6 +153,13 @@ const handleLogin = async (req, res) => {
 
     if (user.status === 'banned') {
       return res.status(403).json({ success: false, error: 'Your account has been banned by an administrator.' });
+    }
+
+    if (user.status === 'pending') {
+      return res.status(403).json({
+        success: false,
+        error: 'Your account is pending administrator approval. Please contact central admin to approve your account before logging in.'
+      });
     }
 
     // Verify Password Hash
@@ -107,11 +177,11 @@ const handleLogin = async (req, res) => {
       userRole = 'admin';
     }
 
-    await logUserLoginToSheet(null, {
+    logUserLoginToSheet(null, {
       email: cleanEmail,
       role: userRole,
-      details: 'Successful login (24h session started)'
-    });
+      details: 'Successful user login'
+    }).catch(() => {});
 
     // Sign 24-hour JWT Token
     const tokenPayload = { id: user.id, name: user.name, email: cleanEmail, role: userRole, status: user.status };
@@ -131,14 +201,47 @@ const handleLogin = async (req, res) => {
 
 const handleGetMe = async (req, res) => {
   try {
-    const users = await getUsersFromSheet();
+    if (req.user && req.user.email === 'nexadmin.ph@gmail.com') {
+      return res.status(200).json({
+        success: true,
+        user: {
+          id: req.user.id || 'usr_admin_nex',
+          name: req.user.name || 'Nex Admin',
+          email: 'nexadmin.ph@gmail.com',
+          role: 'admin',
+          status: 'active'
+        }
+      });
+    }
+
+    let users = [];
+    try {
+      users = await getUsersFromSheet();
+    } catch (e) {}
+
     const user = users.find(u => u.id === req.user.id || u.email === req.user.email);
     if (!user) {
+      if (req.user) {
+        return res.status(200).json({
+          success: true,
+          user: {
+            id: req.user.id,
+            name: req.user.name,
+            email: req.user.email,
+            role: req.user.role,
+            status: req.user.status || 'active'
+          }
+        });
+      }
       return res.status(404).json({ success: false, error: 'User not found.' });
     }
 
     if (user.status === 'banned') {
       return res.status(403).json({ success: false, error: 'Account banned.' });
+    }
+
+    if (user.status === 'pending') {
+      return res.status(403).json({ success: false, error: 'Account is pending admin approval.' });
     }
 
     return res.status(200).json({
