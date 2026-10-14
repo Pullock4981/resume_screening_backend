@@ -432,9 +432,10 @@ async function evaluateGithubProfile(inputUrlOrUsername) {
     detail: readmeQualityScore === 4 ? `${reposWithGoodReadme} repository has a structured README with setup guidelines or overview.` : 'Repository README files are short or missing.'
   });
 
-  // Calculate Total Score out of 60
-  const totalScore = breakdown.reduce((sum, item) => sum + item.score, 0);
-  const percentage = Math.round((totalScore / 60) * 100);
+  // Calculate Total Score out of 60 (strictly capped at 60 max)
+  const rawScore = breakdown.reduce((sum, item) => sum + item.score, 0);
+  const totalScore = Math.min(60, rawScore);
+  const percentage = Math.min(100, Math.round((totalScore / 60) * 100));
 
   let grade = 'Needs Work';
   let gradeColor = 'rose';

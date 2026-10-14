@@ -123,7 +123,7 @@ function parseCsvRows(csvText) {
 /**
  * Fetch rows from Google Sheet and map them with column indices
  */
-async function getSheetData(sheetUrlOrId) {
+async function getSheetData(sheetUrlOrId, checkType = 'screening') {
   const spreadsheetId = extractSpreadsheetId(sheetUrlOrId);
   if (!spreadsheetId) {
     throw new Error('Invalid Google Sheet URL or Spreadsheet ID.');
@@ -150,7 +150,7 @@ async function getSheetData(sheetUrlOrId) {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `'${sheetName}'!A1:Z10000`,
+      range: `'${sheetName.replace(/'/g, "''")}'`,
     });
 
     rows = response.data.values || [];
@@ -180,19 +180,48 @@ async function getSheetData(sheetUrlOrId) {
   const nameIdx = headers.findIndex(h => /name|candidate|applicant|student|username/i.test(h));
   const emailIdx = headers.findIndex(h => /email|mail/i.test(h));
   const phoneIdx = headers.findIndex(h => /phone|mobile|contact|num/i.test(h));
-  const resumeIdx = headers.findIndex(h => /github|git|profile|submission|link|url|drive|file|resume|cv|upload|document|pdf|attachment/i.test(h));
+  const linkedinIdx = headers.findIndex(h => /linkedin/i.test(h));
+  const githubIdx = headers.findIndex(h => /github|git\b/i.test(h));
+  const resumeIdx = headers.findIndex(h => /resume|cv|drive|attachment|submission|link|url|file|upload|document|pdf/i.test(h));
 
-  // Required output headers
-  const requiredOutputHeaders = [
-    'Match Score (%)',
-    'ATS Score (%)',
-    'Final Score (%)',
-    'Category',
-    'Critical Flag',
-    'Feedback Summary',
-    'GitHub Present Items (কী কী আছে)',
-    'GitHub Missing Items (কী কী নাই)'
-  ];
+  // Required output headers strictly based on checkType
+  let requiredOutputHeaders = [];
+  if (checkType === 'linkedin') {
+    requiredOutputHeaders = [
+      'LinkedIn Score (60)',
+      'LinkedIn Percentage (%)',
+      'LinkedIn Status',
+      'LinkedIn Feedback',
+      'LinkedIn Present Items (কী কী আছে)',
+      'LinkedIn Missing Items (কী কী নাই)'
+    ];
+  } else if (checkType === 'github') {
+    requiredOutputHeaders = [
+      'GitHub Score (60)',
+      'GitHub Percentage (%)',
+      'GitHub Status',
+      'GitHub Feedback',
+      'GitHub Present Items (কী কী আছে)',
+      'GitHub Missing Items (কী কী নাই)'
+    ];
+  } else if (checkType === 'ats') {
+    requiredOutputHeaders = [
+      'ATS Score (%)',
+      'ATS Category',
+      'Critical Flag',
+      'Feedback Summary'
+    ];
+  } else {
+    // General Candidate Screening
+    requiredOutputHeaders = [
+      'Match Score (%)',
+      'ATS Score (%)',
+      'Final Score (%)',
+      'Category',
+      'Critical Flag',
+      'Feedback Summary'
+    ];
+  }
 
   // Ensure output headers exist
   let updatedHeaders = [...headers];
@@ -210,7 +239,7 @@ async function getSheetData(sheetUrlOrId) {
       const sheets = getGoogleSheetsClient();
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${sheetName}!A1`,
+        range: `'${sheetName.replace(/'/g, "''")}'!A1`,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [updatedHeaders] },
       });
@@ -225,7 +254,6 @@ async function getSheetData(sheetUrlOrId) {
     colMap[h] = idx;
   });
 
-  const seenKeys = new Set();
   const candidates = [];
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
@@ -237,31 +265,26 @@ async function getSheetData(sheetUrlOrId) {
 
     const email = emailIdx !== -1 && row[emailIdx] ? row[emailIdx].trim() : '';
     const phone = phoneIdx !== -1 && row[phoneIdx] ? row[phoneIdx].trim() : '';
+    let linkedinLink = linkedinIdx !== -1 && row[linkedinIdx] ? row[linkedinIdx].trim() : '';
+    let githubLink = githubIdx !== -1 && row[githubIdx] ? row[githubIdx].trim() : '';
     let resumeLink = resumeIdx !== -1 && row[resumeIdx] ? row[resumeIdx].trim() : '';
 
-    // Fallback: search row for any URL or github handle if column missed
+    // Search row for linkedin.com if missing
+    if (!linkedinLink) {
+      const cellWithLi = row.find(cell => cell && typeof cell === 'string' && /linkedin\.com/i.test(cell));
+      if (cellWithLi) linkedinLink = cellWithLi.trim();
+    }
+
+    // Search row for github.com if missing
+    if (!githubLink) {
+      const cellWithGh = row.find(cell => cell && typeof cell === 'string' && /github\.com/i.test(cell));
+      if (cellWithGh) githubLink = cellWithGh.trim();
+    }
+
+    // Fallback: search row for any URL or handle if resumeLink missed
     if (!resumeLink) {
       const cellWithUrl = row.find(cell => cell && typeof cell === 'string' && (cell.includes('http://') || cell.includes('https://') || cell.includes('drive.google.com') || cell.includes('docs.google.com') || cell.includes('dropbox.com') || cell.includes('github.com')));
       if (cellWithUrl) resumeLink = cellWithUrl.trim();
-    }
-
-    // Smart deduplication: Only deduplicate on valid unique emails or unique specific URLs
-    const isRealEmail = email && email.includes('@') && email.includes('.');
-    const isRealUrl = resumeLink && (resumeLink.startsWith('http') || resumeLink.includes('github.com/')) && !/n\/a|none|null|undefined|^https?:\/\/github\.com\/?$/i.test(resumeLink);
-
-    let dedupKey = null;
-    if (isRealEmail) {
-      dedupKey = `email:${email.toLowerCase().trim()}`;
-    } else if (isRealUrl) {
-      dedupKey = `url:${resumeLink.toLowerCase().trim()}`;
-    }
-
-    if (dedupKey) {
-      if (seenKeys.has(dedupKey)) {
-        console.log(`Skipping duplicate candidate row ${i + 1}: ${dedupKey}`);
-        continue;
-      }
-      seenKeys.add(dedupKey);
     }
 
     // Derive name if missing
@@ -274,12 +297,15 @@ async function getSheetData(sheetUrlOrId) {
       }
     }
 
+    // Include every candidate row without skipping so all rows in the sheet are evaluated and marked
     candidates.push({
       rowIndex: i + 1, // 1-based index for Google Sheets row
       name,
       email,
       phone: phone || 'N/A',
       resumeLink,
+      linkedinLink,
+      githubLink,
       rawRowData: row
     });
   }
@@ -299,19 +325,24 @@ async function getSheetData(sheetUrlOrId) {
 async function updateCandidateResult(spreadsheetId, sheetName, colMap, rowIndex, result) {
   const sheets = getGoogleSheetsClient();
 
-  const updates = [
-    { col: 'Match Score (%)', value: result.matchScore },
-    { col: 'ATS Score (%)', value: result.atsScore },
-    { col: 'Final Score (%)', value: result.finalScore },
-    { col: 'Category', value: result.category },
-    { col: 'Critical Flag', value: result.criticalFlag ? 'CRITICAL MISSING' : 'OK' },
-    { col: 'Feedback Summary', value: result.feedback }
-  ];
-  if (result.presentItems !== undefined) {
-    updates.push({ col: 'GitHub Present Items (কী কী আছে)', value: result.presentItems });
-  }
-  if (result.missingItems !== undefined) {
-    updates.push({ col: 'GitHub Missing Items (কী কী নাই)', value: result.missingItems });
+  let updates = [];
+  if (result.columns && typeof result.columns === 'object') {
+    updates = Object.entries(result.columns).map(([col, value]) => ({ col, value }));
+  } else {
+    updates = [
+      { col: 'Match Score (%)', value: result.matchScore },
+      { col: 'ATS Score (%)', value: result.atsScore },
+      { col: 'Final Score (%)', value: result.finalScore },
+      { col: 'Category', value: result.category },
+      { col: 'Critical Flag', value: result.criticalFlag ? 'CRITICAL MISSING' : 'OK' },
+      { col: 'Feedback Summary', value: result.feedback }
+    ];
+    if (result.presentItems !== undefined) {
+      updates.push({ col: 'GitHub Present Items (কী কী আছে)', value: result.presentItems });
+    }
+    if (result.missingItems !== undefined) {
+      updates.push({ col: 'GitHub Missing Items (কী কী নাই)', value: result.missingItems });
+    }
   }
 
   const validColIndices = updates
@@ -334,7 +365,7 @@ async function updateCandidateResult(spreadsheetId, sheetName, colMap, rowIndex,
 
   const startColLetter = getColumnLetter(minColIdx + 1);
   const endColLetter = getColumnLetter(maxColIdx + 1);
-  const range = `${sheetName}!${startColLetter}${rowIndex}:${endColLetter}${rowIndex}`;
+  const range = `'${sheetName.replace(/'/g, "''")}'!${startColLetter}${rowIndex}:${endColLetter}${rowIndex}`;
 
   await sheets.spreadsheets.values.update({
     spreadsheetId,
@@ -355,19 +386,25 @@ async function batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, upd
 
   for (const item of updateItems) {
     const { rowIndex, result } = item;
-    const updates = [
-      { col: 'Match Score (%)', value: result.matchScore },
-      { col: 'ATS Score (%)', value: result.atsScore },
-      { col: 'Final Score (%)', value: result.finalScore },
-      { col: 'Category', value: result.category },
-      { col: 'Critical Flag', value: result.criticalFlag ? 'CRITICAL MISSING' : 'OK' },
-      { col: 'Feedback Summary', value: result.feedback }
-    ];
-    if (result.presentItems !== undefined) {
-      updates.push({ col: 'GitHub Present Items (কী কী আছে)', value: result.presentItems });
-    }
-    if (result.missingItems !== undefined) {
-      updates.push({ col: 'GitHub Missing Items (কী কী নাই)', value: result.missingItems });
+    let updates = [];
+
+    if (result.columns && typeof result.columns === 'object') {
+      updates = Object.entries(result.columns).map(([col, value]) => ({ col, value }));
+    } else {
+      updates = [
+        { col: 'Match Score (%)', value: result.matchScore },
+        { col: 'ATS Score (%)', value: result.atsScore },
+        { col: 'Final Score (%)', value: result.finalScore },
+        { col: 'Category', value: result.category },
+        { col: 'Critical Flag', value: result.criticalFlag ? 'CRITICAL MISSING' : 'OK' },
+        { col: 'Feedback Summary', value: result.feedback }
+      ];
+      if (result.presentItems !== undefined) {
+        updates.push({ col: 'GitHub Present Items (কী কী আছে)', value: result.presentItems });
+      }
+      if (result.missingItems !== undefined) {
+        updates.push({ col: 'GitHub Missing Items (কী কী নাই)', value: result.missingItems });
+      }
     }
 
     const validColIndices = updates
@@ -389,7 +426,7 @@ async function batchUpdateCandidateResults(spreadsheetId, sheetName, colMap, upd
 
     const startColLetter = getColumnLetter(minColIdx + 1);
     const endColLetter = getColumnLetter(maxColIdx + 1);
-    const range = `${sheetName}!${startColLetter}${rowIndex}:${endColLetter}${rowIndex}`;
+    const range = `'${sheetName.replace(/'/g, "''")}'!${startColLetter}${rowIndex}:${endColLetter}${rowIndex}`;
 
     data.push({
       range,
@@ -604,7 +641,7 @@ async function writeBatchToMasterDatabase(masterSheetUrl, operationName, results
 /**
  * Automatically sort Google Sheet rows by Final Score (%) in DESCENDING order
  */
-async function sortSheetByFinalScore(spreadsheetId, sheetName, colMap) {
+async function sortSheetByFinalScore(spreadsheetId, sheetName, colMap, scoreColName = null) {
   try {
     const sheets = getGoogleSheetsClient();
 
@@ -615,8 +652,13 @@ async function sortSheetByFinalScore(spreadsheetId, sheetName, colMap) {
     if (!targetSheet) return;
     const sheetId = targetSheet.properties.sheetId;
 
-    // 2. Find column index for Final Score (%)
-    const scoreColIdx = colMap['Final Score (%)'];
+    // 2. Find column index for target score column
+    let scoreColIdx = undefined;
+    if (scoreColName && colMap[scoreColName] !== undefined) {
+      scoreColIdx = colMap[scoreColName];
+    } else {
+      scoreColIdx = colMap['Final Score (%)'] ?? colMap['LinkedIn Score (60)'] ?? colMap['GitHub Score (60)'] ?? colMap['ATS Score (%)'];
+    }
     if (scoreColIdx === undefined) return;
 
     // 3. Trigger sortRange batchUpdate
@@ -1455,10 +1497,10 @@ async function saveLinkedinCheckToSheet(masterSpreadsheetIdOrUrl, results, opera
       headers,
       ...sortedResults.map(r => {
         const passedList = (r.breakdown || []).filter(b => b.passed);
-        const missingList = (r.breakdown || []).filter(b => !b.passed);
+        const missingList = (r.breakdown || []).filter(b => !b.passed && !b.isBonus);
 
         const presentStr = r.presentItems || (passedList.length > 0 
-          ? passedList.map((b) => `• ${b.title || b.criterion} (+${b.score}/${b.maxScore})`).join('\n')
+          ? passedList.map((b) => b.isBonus ? `• ${b.title || b.criterion} (+${b.score} Bonus)` : `• ${b.title || b.criterion} (+${b.score}/${b.maxScore})`).join('\n')
           : 'None');
         const missingStr = r.missingItems || (missingList.length > 0 
           ? missingList.map((b) => `• ${b.title || b.criterion} (${b.score}/${b.maxScore})`).join('\n')
