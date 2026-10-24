@@ -7,11 +7,17 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
 
 const handleRegister = async (req, res) => {
   try {
-    const { name, email, password, adminSecret } = req.body || {};
+    const { name, email, password, team, adminSecret } = req.body || {};
 
     if (!name || !email || !password) {
       return res.status(400).json({ success: false, error: 'Name, email, and password are required.' });
     }
+
+    if (!team || !team.trim()) {
+      return res.status(400).json({ success: false, error: 'Please select your Team Name (Mexem, Alpha, Delta, Supernuva, or PRM).' });
+    }
+
+    const cleanTeam = team.trim();
 
     if (password.length < 4) {
       return res.status(400).json({ success: false, error: 'Password must be at least 4 characters long.' });
@@ -47,6 +53,7 @@ const handleRegister = async (req, res) => {
       passwordHash,
       role,
       status,
+      team: cleanTeam,
       createdAt: new Date().toISOString()
     };
 
@@ -58,7 +65,7 @@ const handleRegister = async (req, res) => {
       await logUserLoginToSheet(null, {
         email: cleanEmail,
         role: 'user',
-        details: 'New user registered — Pending admin approval'
+        details: `New user registered [Team: ${cleanTeam}] — Pending admin approval`
       });
 
       return res.status(201).json({
@@ -72,10 +79,10 @@ const handleRegister = async (req, res) => {
     await logUserLoginToSheet(null, {
       email: cleanEmail,
       role,
-      details: 'Master admin registered and logged in'
+      details: `Master admin registered [Team: ${cleanTeam}] and logged in`
     });
 
-    const tokenPayload = { id: userId, name: newUser.name, email: cleanEmail, role, status: 'active' };
+    const tokenPayload = { id: userId, name: newUser.name, email: cleanEmail, role, status: 'active', team: cleanTeam };
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
 
     return res.status(201).json({
@@ -184,7 +191,14 @@ const handleLogin = async (req, res) => {
     }).catch(() => {});
 
     // Sign 24-hour JWT Token
-    const tokenPayload = { id: user.id, name: user.name, email: cleanEmail, role: userRole, status: user.status };
+    const tokenPayload = {
+      id: user.id,
+      name: user.name,
+      email: cleanEmail,
+      role: userRole,
+      status: user.status,
+      team: user.team || ''
+    };
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
 
     return res.status(200).json({
@@ -209,7 +223,8 @@ const handleGetMe = async (req, res) => {
           name: req.user.name || 'Nex Admin',
           email: 'nexadmin.ph@gmail.com',
           role: 'admin',
-          status: 'active'
+          status: 'active',
+          team: 'Mexem'
         }
       });
     }
@@ -229,7 +244,8 @@ const handleGetMe = async (req, res) => {
             name: req.user.name,
             email: req.user.email,
             role: req.user.role,
-            status: req.user.status || 'active'
+            status: req.user.status || 'active',
+            team: req.user.team || ''
           }
         });
       }
@@ -251,7 +267,8 @@ const handleGetMe = async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
-        status: user.status
+        status: user.status,
+        team: user.team || ''
       }
     });
   } catch (err) {

@@ -1,4 +1,4 @@
-const { getSheetData, updateCandidateResult, batchUpdateCandidateResults, logOperationToMasterSheet, writeBatchToMasterDatabase, sortSheetByFinalScore, extractSpreadsheetId } = require('../config/googleSheets');
+const { getSheetData, ensureSheetHeaders, updateCandidateResult, batchUpdateCandidateResults, logOperationToMasterSheet, writeBatchToMasterDatabase, sortSheetByFinalScore, extractSpreadsheetId } = require('../config/googleSheets');
 const { fetchResumeText } = require('./resumeDownloader');
 const { evaluateATS } = require('../engine/atsChecker');
 const { extractSkillsFromJD, matchResumeToRequirements } = require('../engine/jdMatcher');
@@ -584,6 +584,9 @@ async function processLinkedinCheck({ sheetUrl, masterSheetUrl, linkedinUrl, ope
     const sheetInfo = await getSheetData(sheetUrl, 'linkedin');
     const { spreadsheetId, sheetName, colMap, candidates } = sheetInfo;
 
+    // Explicitly guarantee all 6 output headers exist in Row 1 of the Google Sheet
+    await ensureSheetHeaders(spreadsheetId, sheetName, 'linkedin');
+
     if (!candidates || candidates.length === 0) {
       throw new Error('No candidate rows found in the Google Sheet.');
     }
@@ -653,7 +656,7 @@ async function processLinkedinCheck({ sheetUrl, masterSheetUrl, linkedinUrl, ope
             gradeColor: 'rose',
             passedCount: 0,
             partialCount: 0,
-            missingCount: 15,
+            missingCount: 14,
             breakdown: [{ id: 'missing', title: 'LinkedIn Link Missing', criterion: 'No LinkedIn Profile Link Found', score: 0, maxScore: 60, passed: false, detail: 'No LinkedIn profile URL found in candidate Google Sheet row.' }],
             headline: 'No Profile Found',
             aboutSummary: 'Candidate did not provide a LinkedIn URL in their submission row.'
@@ -673,7 +676,7 @@ async function processLinkedinCheck({ sheetUrl, masterSheetUrl, linkedinUrl, ope
               gradeColor: 'rose',
               passedCount: 0,
               partialCount: 0,
-              missingCount: 15,
+              missingCount: 14,
               breakdown: [{ id: 'error', title: 'Evaluation Error', criterion: 'LinkedIn Error', score: 0, maxScore: 60, passed: false, detail: err.message }],
               headline: 'Profile Unavailable',
               aboutSummary: err.message
@@ -681,15 +684,27 @@ async function processLinkedinCheck({ sheetUrl, masterSheetUrl, linkedinUrl, ope
           }
         }
 
-        const passedList = (evalResult.breakdown || []).filter(b => b.passed);
-        const missingList = (evalResult.breakdown || []).filter(b => !b.passed && !b.isBonus);
+        const passedList = (evalResult.breakdown || []).filter(b => b.score === b.maxScore);
+        const partialList = (evalResult.breakdown || []).filter(b => !b.isBonus && b.score > 0 && b.score < b.maxScore);
+        const missingList = (evalResult.breakdown || []).filter(b => !b.isBonus && b.score === 0);
 
-        const presentItemsStr = passedList.length > 0 
-          ? passedList.map((b) => b.isBonus ? `• ${b.title || b.criterion} (+${b.score} Bonus)` : `• ${b.title || b.criterion} (+${b.maxScore}/${b.maxScore})`).join('\n')
-          : 'None';
-        const missingItemsStr = missingList.length > 0 
-          ? missingList.map((b) => `• ${b.title || b.criterion} (0/${b.maxScore})`).join('\n')
-          : '🎉 Everything Present (0 Missing)';
+        const presentParts = [];
+        passedList.forEach(b => {
+          presentParts.push(b.isBonus ? `• ${b.title || b.criterion} (+${b.score} Bonus)` : `• ${b.title || b.criterion} (+${b.score}/${b.maxScore} Full)`);
+        });
+        partialList.forEach(b => {
+          presentParts.push(`• ${b.title || b.criterion} (+${b.score}/${b.maxScore} Partial)`);
+        });
+        const presentItemsStr = presentParts.length > 0 ? presentParts.join('\n') : 'None';
+
+        const missingParts = [];
+        partialList.forEach(b => {
+          missingParts.push(`• ${b.title || b.criterion} (-${b.maxScore - b.score} Marks Partial: ${b.detail})`);
+        });
+        missingList.forEach(b => {
+          missingParts.push(`• ${b.title || b.criterion} (0/${b.maxScore} Missing: ${b.detail})`);
+        });
+        const missingItemsStr = missingParts.length > 0 ? missingParts.join('\n') : '🎉 Everything Present (0 Missing)';
 
         const item = {
           ...evalResult,
@@ -768,15 +783,27 @@ async function processLinkedinCheck({ sheetUrl, masterSheetUrl, linkedinUrl, ope
   // Case 2: Single LinkedIn Profile URL or Username
   if (linkedinUrl && linkedinUrl.trim().length > 0) {
     const evalResult = await evaluateLinkedinProfile(linkedinUrl.trim());
-    const passedList = (evalResult.breakdown || []).filter(b => b.passed);
-    const missingList = (evalResult.breakdown || []).filter(b => !b.passed && !b.isBonus);
+    const passedList = (evalResult.breakdown || []).filter(b => b.score === b.maxScore);
+    const partialList = (evalResult.breakdown || []).filter(b => !b.isBonus && b.score > 0 && b.score < b.maxScore);
+    const missingList = (evalResult.breakdown || []).filter(b => !b.isBonus && b.score === 0);
 
-    const presentItemsStr = passedList.length > 0 
-      ? passedList.map((b) => b.isBonus ? `• ${b.title || b.criterion} (+${b.score} Bonus)` : `• ${b.title || b.criterion} (+${b.maxScore}/${b.maxScore})`).join('\n')
-      : 'None';
-    const missingItemsStr = missingList.length > 0 
-      ? missingList.map((b) => `• ${b.title || b.criterion} (0/${b.maxScore})`).join('\n')
-      : '🎉 Everything Present (0 Missing)';
+    const presentParts = [];
+    passedList.forEach(b => {
+      presentParts.push(b.isBonus ? `• ${b.title || b.criterion} (+${b.score} Bonus)` : `• ${b.title || b.criterion} (+${b.score}/${b.maxScore} Full)`);
+    });
+    partialList.forEach(b => {
+      presentParts.push(`• ${b.title || b.criterion} (+${b.score}/${b.maxScore} Partial)`);
+    });
+    const presentItemsStr = presentParts.length > 0 ? presentParts.join('\n') : 'None';
+
+    const missingParts = [];
+    partialList.forEach(b => {
+      missingParts.push(`• ${b.title || b.criterion} (-${b.maxScore - b.score} Marks Partial: ${b.detail})`);
+    });
+    missingList.forEach(b => {
+      missingParts.push(`• ${b.title || b.criterion} (0/${b.maxScore} Missing: ${b.detail})`);
+    });
+    const missingItemsStr = missingParts.length > 0 ? missingParts.join('\n') : '🎉 Everything Present (0 Missing)';
 
     const singleItem = {
       ...evalResult,

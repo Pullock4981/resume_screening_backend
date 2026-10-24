@@ -120,6 +120,142 @@ function parseCsvRows(csvText) {
   }).filter(r => r.some(c => c.length > 0));
 }
 
+function getColumnLetter(colNum) {
+  let temp, letter = '';
+  while (colNum > 0) {
+    temp = (colNum - 1) % 26;
+    letter = String.fromCharCode(65 + temp) + letter;
+    colNum = (colNum - temp - 1) / 26;
+  }
+  return letter;
+}
+
+/**
+ * Guaranteed header writer: Ensures row 1 of the Google Sheet has all required output headers
+ * and that column dimensions are sufficient (avoids grid limit errors on Google Forms sheets).
+ */
+async function ensureSheetHeaders(spreadsheetId, sheetName, checkType = 'linkedin') {
+  try {
+    const sheets = getGoogleSheetsClient();
+    
+    let requiredOutputHeaders = [];
+    if (checkType === 'linkedin') {
+      requiredOutputHeaders = [
+        'LinkedIn Score (60)',
+        'LinkedIn Percentage (%)',
+        'LinkedIn Status',
+        'LinkedIn Feedback',
+        'LinkedIn Present Items (কী কী আছে)',
+        'LinkedIn Missing Items (কী কী নাই)'
+      ];
+    } else if (checkType === 'github') {
+      requiredOutputHeaders = [
+        'GitHub Score (60)',
+        'GitHub Percentage (%)',
+        'GitHub Status',
+        'GitHub Feedback',
+        'GitHub Present Items (কী কী আছে)',
+        'GitHub Missing Items (কী কী নাই)'
+      ];
+    } else if (checkType === 'ats') {
+      requiredOutputHeaders = [
+        'ATS Score (%)',
+        'ATS Category',
+        'Critical Flag',
+        'Feedback Summary'
+      ];
+    } else {
+      requiredOutputHeaders = [
+        'Match Score (%)',
+        'ATS Score (%)',
+        'Final Score (%)',
+        'Category',
+        'Critical Flag',
+        'Feedback Summary'
+      ];
+    }
+
+    // 1. Get current row 1 values
+    const rowRes = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName.replace(/'/g, "''")}'!1:1`
+    });
+
+    const currentHeaders = (rowRes.data.values && rowRes.data.values[0]) || [];
+
+    // Check if all required output headers already exist in row 1
+    const allPresent = requiredOutputHeaders.every(reqH =>
+      currentHeaders.some(h => h && h.toString().trim().toLowerCase() === reqH.toLowerCase())
+    );
+
+    if (allPresent) {
+      return; // All headers already present in row 1
+    }
+
+    // 2. Find last question column (skip any trailing empty cells)
+    let lastQuestionIdx = -1;
+    for (let c = 0; c < currentHeaders.length; c++) {
+      const val = (currentHeaders[c] || '').toString().trim();
+      if (val && !requiredOutputHeaders.some(reqH => reqH.toLowerCase() === val.toLowerCase())) {
+        lastQuestionIdx = c;
+      }
+    }
+
+    const startColIdx = lastQuestionIdx >= 0 ? lastQuestionIdx + 1 : currentHeaders.length;
+    const endColIdx = startColIdx + requiredOutputHeaders.length - 1;
+    const totalRequiredCols = endColIdx + 1;
+
+    // 3. Ensure grid dimensions
+    try {
+      const meta = await sheets.spreadsheets.get({ spreadsheetId });
+      if (meta.data && meta.data.sheets) {
+        const currentSheetObj = meta.data.sheets.find(s => s.properties.title === sheetName) || meta.data.sheets[0];
+        const currentSheetId = currentSheetObj.properties.sheetId || 0;
+        const currentColCount = currentSheetObj.properties.gridProperties ? currentSheetObj.properties.gridProperties.columnCount : 26;
+
+        if (totalRequiredCols > currentColCount) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId,
+            requestBody: {
+              requests: [
+                {
+                  updateSheetProperties: {
+                    properties: {
+                      sheetId: currentSheetId,
+                      gridProperties: {
+                        columnCount: totalRequiredCols + 5
+                      }
+                    },
+                    fields: 'gridProperties.columnCount'
+                  }
+                }
+              ]
+            }
+          });
+        }
+      }
+    } catch (dimErr) {
+      console.warn('[GoogleSheet] Grid dimension check warning:', dimErr.message);
+    }
+
+    // 4. Explicitly write required output headers to row 1
+    const startColLetter = getColumnLetter(startColIdx + 1);
+    const endColLetter = getColumnLetter(endColIdx + 1);
+    const targetRange = `'${sheetName.replace(/'/g, "''")}'!${startColLetter}1:${endColLetter}1`;
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: targetRange,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [requiredOutputHeaders] }
+    });
+
+    console.log(`[GoogleSheet] Successfully wrote headers to ${targetRange}`);
+  } catch (headerErr) {
+    console.error('[GoogleSheet] Failed to ensure headers in sheet:', headerErr.message);
+  }
+}
+
 /**
  * Fetch rows from Google Sheet and map them with column indices
  */
@@ -176,13 +312,66 @@ async function getSheetData(sheetUrlOrId, checkType = 'screening') {
 
   const headers = rows[0].map(h => h ? h.trim() : '');
 
-  // Find column indices (case-insensitive & flexible)
-  const nameIdx = headers.findIndex(h => /name|candidate|applicant|student|username/i.test(h));
-  const emailIdx = headers.findIndex(h => /email|mail/i.test(h));
-  const phoneIdx = headers.findIndex(h => /phone|mobile|contact|num/i.test(h));
-  const linkedinIdx = headers.findIndex(h => /linkedin/i.test(h));
-  const githubIdx = headers.findIndex(h => /github|git\b/i.test(h));
-  const resumeIdx = headers.findIndex(h => /resume|cv|drive|attachment|submission|link|url|file|upload|document|pdf/i.test(h));
+  // Find column indices (case-insensitive & flexible, supporting English & Bengali Google Forms headers)
+  let nameIdx = headers.findIndex(h => /name|candidate|applicant|student|username|নাম|শিক্ষার্থী|আবেদনকারী/i.test(h));
+  let emailIdx = headers.findIndex(h => /email|mail|ইমেইল|ই-মেইল|মেইল/i.test(h));
+  let phoneIdx = headers.findIndex(h => /phone|mobile|contact|num|ফোন|মোবাইল|নাম্বার|নম্বর|যোগাযোগ/i.test(h));
+  let linkedinIdx = headers.findIndex(h => /linkedin|লিঙ্কডইন|লিংকডইন|প্রোফাইল/i.test(h));
+  let githubIdx = headers.findIndex(h => /github|git\b/i.test(h));
+  let resumeIdx = headers.findIndex(h => /resume|cv|drive|attachment|submission|link|url|file|upload|document|pdf/i.test(h));
+
+  // Smart fallback: If any column is not found by header text, inspect sample rows
+  if (rows.length > 1) {
+    const sampleRows = rows.slice(1, Math.min(rows.length, 30));
+    const maxCols = Math.max(...sampleRows.map(r => r ? r.length : 0));
+
+    // Fallback detection for LinkedIn column (matches linkedin.com or in/slug)
+    if (linkedinIdx === -1) {
+      for (let c = 0; c < maxCols; c++) {
+        const matchCount = sampleRows.filter(r => r && r[c] && typeof r[c] === 'string' && /linkedin\.com|in\/[a-zA-Z0-9_\-%]+/i.test(r[c])).length;
+        if (matchCount >= 1) {
+          linkedinIdx = c;
+          break;
+        }
+      }
+    }
+
+    // Fallback detection for Email column
+    if (emailIdx === -1) {
+      for (let c = 0; c < maxCols; c++) {
+        const matchCount = sampleRows.filter(r => r && r[c] && typeof r[c] === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r[c].trim())).length;
+        if (matchCount >= 2) {
+          emailIdx = c;
+          break;
+        }
+      }
+    }
+
+    // Fallback detection for Phone column
+    if (phoneIdx === -1) {
+      for (let c = 0; c < maxCols; c++) {
+        const matchCount = sampleRows.filter(r => r && r[c] && typeof r[c] === 'string' && /^(?:\+?88)?01[0-9]{8,9}$/.test(r[c].trim().replace(/[-\s]/g, ''))).length;
+        if (matchCount >= 2) {
+          phoneIdx = c;
+          break;
+        }
+      }
+    }
+
+    // Fallback detection for Name column
+    if (nameIdx === -1) {
+      for (let c = 0; c < maxCols; c++) {
+        if (c === emailIdx || c === phoneIdx || c === linkedinIdx || c === githubIdx) continue;
+        const isTimestamp = sampleRows.some(r => r && r[c] && /\d{1,2}\/\d{1,2}\/\d{4}/.test(r[c]));
+        if (isTimestamp) continue;
+        const isNameLike = sampleRows.filter(r => r && r[c] && typeof r[c] === 'string' && /^[a-zA-Z\s\.\u0980-\u09FF]{2,50}$/.test(r[c].trim())).length;
+        if (isNameLike >= 2) {
+          nameIdx = c;
+          break;
+        }
+      }
+    }
+  }
 
   // Required output headers strictly based on checkType
   let requiredOutputHeaders = [];
@@ -223,35 +412,35 @@ async function getSheetData(sheetUrlOrId, checkType = 'screening') {
     ];
   }
 
-  // Ensure output headers exist
-  let updatedHeaders = [...headers];
-  let headersAdded = false;
-
-  requiredOutputHeaders.forEach(reqH => {
-    if (!updatedHeaders.some(h => h.toLowerCase() === reqH.toLowerCase())) {
-      updatedHeaders.push(reqH);
-      headersAdded = true;
-    }
-  });
-
-  if (headersAdded) {
-    try {
-      const sheets = getGoogleSheetsClient();
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `'${sheetName.replace(/'/g, "''")}'!A1`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [updatedHeaders] },
-      });
-    } catch (hErr) {
-      console.error('Failed to update sheet header row:', hErr.message);
-    }
-  }
+  // Ensure output headers are written to Row 1 of Google Sheet
+  await ensureSheetHeaders(spreadsheetId, sheetName, checkType);
 
   // Create column mapping dictionary for output writing
   const colMap = {};
-  updatedHeaders.forEach((h, idx) => {
-    colMap[h] = idx;
+  const updatedHeaders = [...headers];
+
+  headers.forEach((h, idx) => {
+    if (h) colMap[h] = idx;
+  });
+
+  let lastQuestionIdx = -1;
+  for (let c = 0; c < headers.length; c++) {
+    const val = (headers[c] || '').toString().trim();
+    if (val && !requiredOutputHeaders.some(reqH => reqH.toLowerCase() === val.toLowerCase())) {
+      lastQuestionIdx = c;
+    }
+  }
+  const startColIdx = lastQuestionIdx >= 0 ? lastQuestionIdx + 1 : headers.length;
+
+  requiredOutputHeaders.forEach((reqH, i) => {
+    const existingIdx = headers.findIndex(h => h && h.toString().trim().toLowerCase() === reqH.toLowerCase());
+    if (existingIdx !== -1) {
+      colMap[reqH] = existingIdx;
+    } else {
+      const targetIdx = startColIdx + i;
+      colMap[reqH] = targetIdx;
+      updatedHeaders[targetIdx] = reqH;
+    }
   });
 
   const candidates = [];
@@ -1050,13 +1239,34 @@ async function ensureUserTabsExist(masterSheetUrlOrId) {
     }
 
     if (!existingTitles.includes('Users')) {
-      const userHeaders = ['User ID', 'Full Name', 'Email Address', 'Password Hash', 'Role', 'Status', 'Created At'];
+      const userHeaders = ['User ID', 'Full Name', 'Email Address', 'Password Hash', 'Role', 'Status', 'Created At', 'Team'];
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range: 'Users!A1',
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [userHeaders] }
       });
+    } else {
+      // Check if header row has Team column, if not add it to H1
+      try {
+        const headRes = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: 'Users!A1:Z1'
+        });
+        const currentHeaders = headRes.data.values && headRes.data.values[0] ? headRes.data.values[0] : [];
+        if (currentHeaders.length > 0 && !currentHeaders.some(h => /team/i.test(h))) {
+          const nextColIdx = currentHeaders.length;
+          const colLetter = getColumnLetter(nextColIdx + 1);
+          await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `Users!${colLetter}1`,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [['Team']] }
+          });
+        }
+      } catch (hErr) {
+        console.warn('Could not ensure Team header in Users sheet:', hErr.message);
+      }
     }
 
     if (!existingTitles.includes('Login_Logs')) {
@@ -1086,10 +1296,12 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
 
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'Users!A1:G10000'
+      range: 'Users!A1:Z10000'
     });
 
     const rows = res.data.values || [];
+    const headers = rows.length > 0 ? rows[0].map(h => (h || '').toString().toLowerCase().trim()) : [];
+    const teamIdx = headers.findIndex(h => h.includes('team'));
     const users = [];
 
     if (rows.length > 1) {
@@ -1101,8 +1313,15 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
         let role = '';
         let status = '';
         let passwordHash = '';
+        let team = '';
         let id = r[0] ? r[0].trim() : `usr_${i}`;
         let name = r[1] ? r[1].trim() : '';
+
+        if (teamIdx !== -1 && r[teamIdx]) {
+          team = r[teamIdx].trim();
+        } else if (r[7]) {
+          team = r[7].trim();
+        }
 
         // Dynamic column inspection for row r
         for (let colIdx = 0; colIdx < r.length; colIdx++) {
@@ -1140,6 +1359,7 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
           passwordHash,
           role,
           status,
+          team,
           createdAt: r[6] ? r[6].trim() : new Date().toISOString()
         });
       }
@@ -1211,7 +1431,8 @@ async function saveUserToSheet(masterSheetUrlOrId, userObj) {
       userObj.passwordHash,
       userObj.role || 'user',
       userObj.status || 'active',
-      userObj.createdAt || new Date().toISOString()
+      userObj.createdAt || new Date().toISOString(),
+      userObj.team || ''
     ];
 
     await sheets.spreadsheets.values.append({
@@ -1246,6 +1467,7 @@ async function updateUserInSheet(masterSheetUrlOrId, userId, updateData) {
     const updatedEmail = updateData.email !== undefined ? updateData.email.toLowerCase() : targetUser.email;
     const updatedRole = updateData.role !== undefined ? updateData.role.toLowerCase() : targetUser.role;
     const updatedStatus = updateData.status !== undefined ? updateData.status.toLowerCase() : targetUser.status;
+    const updatedTeam = updateData.team !== undefined ? updateData.team : (targetUser.team || '');
 
     const rowValues = [
       targetUser.id,
@@ -1254,10 +1476,11 @@ async function updateUserInSheet(masterSheetUrlOrId, userId, updateData) {
       targetUser.passwordHash,
       updatedRole,
       updatedStatus,
-      targetUser.createdAt
+      targetUser.createdAt,
+      updatedTeam
     ];
 
-    const range = `Users!A${targetUser.rowIndex}:G${targetUser.rowIndex}`;
+    const range = `Users!A${targetUser.rowIndex}:H${targetUser.rowIndex}`;
 
     await sheets.spreadsheets.values.update({
       spreadsheetId,
@@ -1474,6 +1697,8 @@ async function saveLinkedinCheckToSheet(masterSpreadsheetIdOrUrl, results, opera
 
     const headers = [
       'Candidate Name',
+      'Email',
+      'Phone',
       'LinkedIn Profile URL',
       'Total Score (out of 60)',
       'Percentage (%)',
@@ -1508,6 +1733,8 @@ async function saveLinkedinCheckToSheet(masterSpreadsheetIdOrUrl, results, opera
 
         return [
           r.name || r.username || '',
+          r.email || 'N/A',
+          r.phone || 'N/A',
           r.profileUrl || '',
           r.totalScore || 0,
           r.percentage || 0,
@@ -1544,6 +1771,7 @@ async function saveLinkedinCheckToSheet(masterSpreadsheetIdOrUrl, results, opera
 module.exports = {
   extractSpreadsheetId,
   getSheetData,
+  ensureSheetHeaders,
   updateCandidateResult,
   batchUpdateCandidateResults,
   logOperationToMasterSheet,

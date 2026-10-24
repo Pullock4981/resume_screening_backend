@@ -17,6 +17,7 @@ const handleGetUsers = async (req, res) => {
         email: u.email,
         role: u.role,
         status: u.status,
+        team: u.team || '',
         createdAt: u.createdAt
       });
     }
@@ -65,13 +66,13 @@ const handleUpdateUserRole = async (req, res) => {
 const handleEditUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { name, email } = req.body || {};
+    const { name, email, team } = req.body || {};
 
-    if (!name && !email) {
-      return res.status(400).json({ success: false, error: 'Name or email is required.' });
+    if (!name && !email && team === undefined) {
+      return res.status(400).json({ success: false, error: 'Name, email, or team is required.' });
     }
 
-    await updateUserInSheet(null, userId, { name, email });
+    await updateUserInSheet(null, userId, { name, email, team });
     return res.status(200).json({ success: true, message: 'User updated successfully.' });
   } catch (err) {
     console.error('Edit User Error:', err.message);
