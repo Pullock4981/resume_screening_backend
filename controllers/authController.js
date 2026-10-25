@@ -1,9 +1,21 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { getUsersFromSheet, saveUserToSheet, logUserLoginToSheet } = require('../config/googleSheets');
+const { getUsersFromSheet, saveUserToSheet, updateUserInSheet, logUserLoginToSheet } = require('../config/googleSheets');
 const { JWT_SECRET } = require('../middleware/authMiddleware');
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
+
+/**
+ * Validate organizational email requirement:
+ * Email must contain either '.ph@gmail.com' or 'programming-hero.com'
+ */
+const isValidOrgEmail = (email) => {
+  if (!email || typeof email !== 'string') return false;
+  const clean = email.trim().toLowerCase();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(clean)) return false;
+  return clean.includes('.ph@gmail.com') || clean.includes('programming-hero.com');
+};
 
 const handleRegister = async (req, res) => {
   try {
@@ -14,7 +26,7 @@ const handleRegister = async (req, res) => {
     }
 
     if (!team || !team.trim()) {
-      return res.status(400).json({ success: false, error: 'Please select your Team Name (Mexem, Alpha, Delta, Supernuva, or PRM).' });
+      return res.status(400).json({ success: false, error: 'Please select your Team Name (Nexen, Alpha, Delta, Supernuva, or PRM).' });
     }
 
     const cleanTeam = team.trim();
@@ -24,6 +36,15 @@ const handleRegister = async (req, res) => {
     }
 
     const cleanEmail = email.trim().toLowerCase();
+
+    // Enforce email verification rule: must contain .ph@gmail.com or programming-hero.com
+    if (!isValidOrgEmail(cleanEmail)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid email address. Email must contain ".ph@gmail.com" or "programming-hero.com" (e.g. name.ph@gmail.com or name@programming-hero.com).'
+      });
+    }
+
     const existingUsers = await getUsersFromSheet();
 
     // Check if user already registered
@@ -36,8 +57,8 @@ const handleRegister = async (req, res) => {
     let role = 'user';
     let status = 'pending';
 
-    // Only master admins are auto-granted active admin
-    if (cleanEmail === 'nexadmin.ph@gmail.com' || cleanEmail === 'ashikmahmud.ph@gmail.com') {
+    // Only master central admin is auto-granted active admin
+    if (cleanEmail === 'nexadmin.ph@gmail.com') {
       role = 'admin';
       status = 'active';
     }
@@ -106,6 +127,14 @@ const handleLogin = async (req, res) => {
     }
 
     const cleanEmail = email.trim().toLowerCase();
+
+    // Enforce email verification rule for login (.ph@gmail.com or programming-hero.com)
+    if (!isValidOrgEmail(cleanEmail) && cleanEmail !== 'admin@admin.com') {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid email address. Access is restricted to ".ph@gmail.com" and "programming-hero.com" emails.'
+      });
+    }
 
     // Direct Master Admin Authentication (Guaranteed instant login without sheet latency)
     if (cleanEmail === 'nexadmin.ph@gmail.com' && password === '@1234Admin') {
@@ -179,8 +208,8 @@ const handleLogin = async (req, res) => {
     }
 
     // Log login entry to Google Sheet Login_Logs tab
-    let userRole = user.role;
-    if (cleanEmail === 'nexadmin.ph@gmail.com' || cleanEmail === 'ashikmahmud.ph@gmail.com' || cleanEmail === 'admin@admin.com') {
+    let userRole = user.role || 'user';
+    if (cleanEmail === 'nexadmin.ph@gmail.com') {
       userRole = 'admin';
     }
 
@@ -224,7 +253,7 @@ const handleGetMe = async (req, res) => {
           email: 'nexadmin.ph@gmail.com',
           role: 'admin',
           status: 'active',
-          team: 'Mexem'
+          team: 'Nexen'
         }
       });
     }
@@ -276,8 +305,93 @@ const handleGetMe = async (req, res) => {
   }
 };
 
+const handleChangePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, error: 'Current password and new password are required.' });
+    }
+
+    if (newPassword.length < 4) {
+      return res.status(400).json({ success: false, error: 'New password must be at least 4 characters long.' });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ success: false, error: 'New password must be different from your current password.' });
+    }
+
+    const email = (req.user?.email || '').trim().toLowerCase();
+    const userId = req.user?.id;
+
+    if (!email) {
+      return res.status(401).json({ success: false, error: 'Unauthorized user session.' });
+    }
+
+    // Get users from sheet
+    const users = await getUsersFromSheet();
+    const targetUser = users.find(u => 
+      (u.email && u.email.toLowerCase() === email) || 
+      (u.id && u.id === userId)
+    );
+
+    let isMatch = false;
+    // Check root admin fallback password
+    if (email === 'nexadmin.ph@gmail.com' && currentPassword === '@1234Admin') {
+      isMatch = true;
+    }
+
+    if (!isMatch && targetUser && targetUser.passwordHash) {
+      isMatch = await bcrypt.compare(currentPassword, targetUser.passwordHash);
+    }
+
+    if (!isMatch) {
+      return res.status(400).json({ success: false, error: 'Current password is incorrect. Please check and try again.' });
+    }
+
+    // Hash new password using bcrypt
+    const salt = await bcrypt.genSalt(10);
+    const newPasswordHash = await bcrypt.hash(newPassword, salt);
+
+    // Save updated password hash to Google Sheet Users tab
+    const targetUserId = targetUser ? targetUser.id : (userId || email);
+    if (targetUser) {
+      await updateUserInSheet(null, targetUserId, {
+        passwordHash: newPasswordHash
+      });
+    } else {
+      await saveUserToSheet(null, {
+        id: userId || `usr_${Date.now()}`,
+        name: req.user?.name || email.split('@')[0],
+        email,
+        passwordHash: newPasswordHash,
+        role: req.user?.role || 'user',
+        status: req.user?.status || 'active',
+        createdAt: new Date().toISOString(),
+        team: req.user?.team || 'Nexen'
+      });
+    }
+
+    // Log password change event
+    logUserLoginToSheet(null, {
+      email,
+      role: req.user?.role || 'user',
+      details: 'Account password changed successfully'
+    }).catch(() => {});
+
+    return res.status(200).json({
+      success: true,
+      message: 'Password changed successfully! Please use your new password for future logins.'
+    });
+  } catch (err) {
+    console.error('Change Password Error:', err.message);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to change password.' });
+  }
+};
+
 module.exports = {
   handleRegister,
   handleLogin,
-  handleGetMe
+  handleGetMe,
+  handleChangePassword
 };

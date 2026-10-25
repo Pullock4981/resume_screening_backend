@@ -1,5 +1,13 @@
 const { getUsersFromSheet, updateUserInSheet, getLoginLogsFromSheet } = require('../config/googleSheets');
 
+const isValidOrgEmail = (email) => {
+  if (!email || typeof email !== 'string') return false;
+  const clean = email.trim().toLowerCase();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(clean)) return false;
+  return clean.includes('.ph@gmail.com') || clean.includes('programming-hero.com');
+};
+
 const handleGetUsers = async (req, res) => {
   try {
     const rawUsers = await getUsersFromSheet();
@@ -55,6 +63,10 @@ const handleUpdateUserRole = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Role must be "admin" or "user".' });
     }
 
+    if (userId === 'usr_admin_nex' || (userId && userId.toLowerCase() === 'nexadmin.ph@gmail.com')) {
+      return res.status(400).json({ success: false, error: 'Root Central Admin (nexadmin.ph@gmail.com) cannot be demoted to user.' });
+    }
+
     await updateUserInSheet(null, userId, { role });
     return res.status(200).json({ success: true, message: `User role updated to ${role}.` });
   } catch (err) {
@@ -72,7 +84,18 @@ const handleEditUser = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Name, email, or team is required.' });
     }
 
-    await updateUserInSheet(null, userId, { name, email, team });
+    let cleanEmail = undefined;
+    if (email) {
+      cleanEmail = email.trim().toLowerCase();
+      if (!isValidOrgEmail(cleanEmail) && cleanEmail !== 'admin@admin.com') {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid email address. Email must contain ".ph@gmail.com" or "programming-hero.com".'
+        });
+      }
+    }
+
+    await updateUserInSheet(null, userId, { name, email: cleanEmail || email, team });
     return res.status(200).json({ success: true, message: 'User updated successfully.' });
   } catch (err) {
     console.error('Edit User Error:', err.message);

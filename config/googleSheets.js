@@ -1344,8 +1344,8 @@ async function getUsersFromSheet(masterSheetUrlOrId) {
         if (!email && r[3] && r[3].includes('@')) email = r[3].trim().toLowerCase();
         if (!role && r[4]) role = r[4].trim().toLowerCase();
 
-        // Account specific role overrides (Admin accounts)
-        if (email === 'nexadmin.ph@gmail.com' || email === 'ashikmahmud.ph@gmail.com') {
+        // Only root central admin (nexadmin) is guaranteed admin
+        if (email === 'nexadmin.ph@gmail.com') {
           role = 'admin';
         }
         if (!role) role = 'user';
@@ -1456,38 +1456,77 @@ async function updateUserInSheet(masterSheetUrlOrId, userId, updateData) {
     const spreadsheetId = extractSpreadsheetId(masterSheetUrlOrId || process.env.DEFAULT_GOOGLE_SHEET_URL);
     if (!spreadsheetId) return;
 
-    const users = await getUsersFromSheet(spreadsheetId);
-    const targetUser = users.find(u => u.id === userId || u.email.toLowerCase() === (userId || '').toLowerCase());
-    if (!targetUser) {
-      throw new Error(`User not found with ID/Email: ${userId}`);
+    await ensureUserTabsExist(spreadsheetId);
+    const sheets = getGoogleSheetsClient();
+
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: 'Users!A1:Z1000'
+    });
+
+    const rows = res.data.values || [];
+    if (rows.length <= 1) {
+      throw new Error('No user records found in Users sheet.');
     }
 
-    const sheets = getGoogleSheetsClient();
-    const updatedName = updateData.name !== undefined ? updateData.name : targetUser.name;
-    const updatedEmail = updateData.email !== undefined ? updateData.email.toLowerCase() : targetUser.email;
-    const updatedRole = updateData.role !== undefined ? updateData.role.toLowerCase() : targetUser.role;
-    const updatedStatus = updateData.status !== undefined ? updateData.status.toLowerCase() : targetUser.status;
-    const updatedTeam = updateData.team !== undefined ? updateData.team : (targetUser.team || '');
+    const cleanUserId = (userId || '').trim().toLowerCase();
+    const updateBatches = [];
 
-    const rowValues = [
-      targetUser.id,
-      updatedName,
-      updatedEmail,
-      targetUser.passwordHash,
-      updatedRole,
-      updatedStatus,
-      targetUser.createdAt,
-      updatedTeam
-    ];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || r.length === 0) continue;
 
-    const range = `Users!A${targetUser.rowIndex}:H${targetUser.rowIndex}`;
+      const rowId = (r[0] || '').trim().toLowerCase();
+      const rowEmail = (r[2] || '').trim().toLowerCase();
+      const hasEmailMatch = r.some(c => (c || '').trim().toLowerCase() === cleanUserId);
 
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [rowValues] }
-    });
+      if (rowId === cleanUserId || rowEmail === cleanUserId || hasEmailMatch) {
+        const currentId = r[0] || userId;
+        const currentName = r[1] || '';
+        const currentEmail = r[2] || '';
+        const currentHash = r[3] || '';
+        const currentRole = r[4] || 'user';
+        const currentStatus = r[5] || 'active';
+        const currentCreated = r[6] || new Date().toISOString();
+        const currentTeam = r[7] || '';
+
+        const updatedName = updateData.name !== undefined ? updateData.name : currentName;
+        const updatedEmail = updateData.email !== undefined ? updateData.email.toLowerCase() : currentEmail;
+        const updatedHash = updateData.passwordHash !== undefined ? updateData.passwordHash : currentHash;
+        const updatedRole = updateData.role !== undefined ? updateData.role.toLowerCase() : currentRole;
+        const updatedStatus = updateData.status !== undefined ? updateData.status.toLowerCase() : currentStatus;
+        const updatedTeam = updateData.team !== undefined ? updateData.team : currentTeam;
+
+        const rowValues = [
+          currentId,
+          updatedName,
+          updatedEmail,
+          updatedHash,
+          updatedRole,
+          updatedStatus,
+          currentCreated,
+          updatedTeam
+        ];
+
+        const rowIndex = i + 1;
+        updateBatches.push({
+          range: `Users!A${rowIndex}:H${rowIndex}`,
+          values: [rowValues]
+        });
+      }
+    }
+
+    if (updateBatches.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          valueInputOption: 'USER_ENTERED',
+          data: updateBatches
+        }
+      });
+    } else {
+      throw new Error(`User not found with ID/Email: ${userId}`);
+    }
   } catch (err) {
     console.error('Failed to update user in sheet:', err.message);
     throw err;

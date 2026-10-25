@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { handleScreening, handleSSEProgress, handleGetHistory, handleAtsCheck, handleLogActivity, handleGetActivityLogs, handleGithubCheck, handleLinkedinCheck } = require('../controllers/screeningController');
-const { handleRegister, handleLogin, handleGetMe } = require('../controllers/authController');
+const { handleRegister, handleLogin, handleGetMe, handleChangePassword } = require('../controllers/authController');
 const { handleGetUsers, handleUpdateUserStatus, handleUpdateUserRole, handleEditUser, handleGetLoginLogs } = require('../controllers/adminController');
 const { verifyToken, requireAdmin } = require('../middleware/authMiddleware');
 
@@ -22,6 +22,7 @@ router.get('/activity/logs', verifyToken, handleGetActivityLogs);
 router.post('/auth/register', handleRegister);
 router.post('/auth/login', handleLogin);
 router.get('/auth/me', verifyToken, handleGetMe);
+router.post('/auth/change-password', verifyToken, handleChangePassword);
 
 // Admin Control Panel Routes
 router.get('/admin/users', verifyToken, requireAdmin, handleGetUsers);
